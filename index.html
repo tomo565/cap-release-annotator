@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>キャップ リリース窓の教示</title>
+<style>
+ :root{
+  --bg:#14161a; --panel:#1b1e24; --fg:#e8eaed; --dim:#9aa0a6; --line:#2f333c;
+  --ok:#34a853; --draft:#fbbc04; --hint:#8ab4f8; --bad:#e8735a;
+ }
+ *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+ html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--fg);
+   font:15px/1.5 -apple-system,"Hiragino Kaku Gothic ProN","Yu Gothic UI",system-ui,sans-serif}
+ body{display:flex;flex-direction:column;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+ #top{padding:6px 10px;background:var(--panel);border-bottom:1px solid var(--line);flex:none}
+ #idline{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;font-variant-numeric:tabular-nums}
+ #vid{font-size:17px;font-weight:700}
+ #off{font-size:17px;font-weight:700;color:var(--hint)}
+ .sub{color:var(--dim);font-size:12px}
+ #barwrap{height:4px;background:#000;border-radius:2px;margin-top:5px;overflow:hidden}
+ #bar{height:100%;width:0;background:var(--ok);transition:width .2s}
+ #views{flex:1;display:flex;min-height:0;gap:6px;padding:6px}
+ #mainwrap,#zoomwrap{position:relative;flex:1;min-width:0;background:#000;border-radius:8px;overflow:hidden}
+ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
+ .tag{position:absolute;left:6px;top:6px;background:rgba(0,0,0,.6);color:var(--dim);
+   font-size:11px;padding:3px 8px;border-radius:4px}
+ #maintag{cursor:pointer} #zoomwrap .tag{pointer-events:none}
+ #nudge{position:absolute;right:6px;bottom:6px;display:grid;
+   grid-template-columns:repeat(3,38px);grid-template-rows:repeat(3,38px);gap:3px}
+ #nudge button{background:rgba(40,44,52,.9);color:var(--fg);border:1px solid var(--line);
+   border-radius:6px;font-size:15px;padding:0}
+ #nudge .sp{visibility:hidden}
+ #ctrl{flex:none;background:var(--panel);border-top:1px solid var(--line);padding:6px 8px 8px}
+ .vis{display:flex;gap:5px;margin-bottom:6px}
+ .vis button{flex:1;padding:9px 2px;font-size:13px;background:#232830;color:var(--fg);
+   border:1px solid var(--line);border-radius:7px}
+ .vis button.on{background:var(--hint);color:#000;border-color:var(--hint);font-weight:700}
+ .acts{display:flex;gap:5px}
+ .acts button{padding:13px 6px;font-size:14px;background:#232830;color:var(--fg);
+   border:1px solid var(--line);border-radius:7px;flex:1}
+ #confirm{flex:2.4;background:var(--ok);color:#05210d;font-weight:700;border-color:var(--ok);font-size:16px}
+ #confirm:disabled{background:#2a2f37;color:#6b7280;border-color:var(--line)}
+ #state{display:flex;gap:10px;align-items:center;justify-content:space-between;
+   font-size:12px;color:var(--dim);margin-top:5px;flex-wrap:wrap}
+ #net.bad{color:var(--bad)} #net.q{color:var(--draft)}
+ #films{display:flex;gap:2px;flex-wrap:nowrap;overflow-x:auto;margin-top:5px;padding-bottom:2px}
+ .fr{flex:none;min-width:30px;height:24px;border:1px solid var(--line);border-radius:4px;
+   font-size:11px;display:flex;align-items:center;justify-content:center;background:#232830;
+   font-variant-numeric:tabular-nums}
+ .fr.draft{background:var(--draft);color:#000;border-color:var(--draft)}
+ .fr.done{background:var(--ok);color:#000;border-color:var(--ok)}
+ .fr.cur{outline:2px solid var(--hint);outline-offset:1px}
+ dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:10px;
+   max-width:min(92vw,520px);padding:16px}
+ dialog::backdrop{background:rgba(0,0,0,.7)}
+ dialog input{width:100%;padding:9px;margin:4px 0 10px;background:#0e1014;color:var(--fg);
+   border:1px solid var(--line);border-radius:6px;font-size:14px}
+ dialog button{padding:10px 14px;background:#232830;color:var(--fg);border:1px solid var(--line);
+   border-radius:7px;font-size:14px;margin-right:6px}
+ dialog h3{margin:0 0 8px} dialog p{color:var(--dim);font-size:13px;margin:6px 0}
+ #menu{position:absolute;right:8px;top:6px;background:none;border:none;color:var(--dim);font-size:20px}
+ @media (max-width:640px){ #views{flex-direction:column} #mainwrap{flex:1.7} #zoomwrap{flex:1} }
+</style>
+
+<div id="top">
+ <button id="menu">☰</button>
+ <div id="idline">
+  <span id="vid">…</span>
+  <span id="off">…</span>
+  <span class="sub" id="fidx"></span>
+  <span class="sub" id="vprog"></span>
+ </div>
+ <div id="barwrap"><div id="bar"></div></div>
+</div>
+
+<div id="views">
+ <div id="mainwrap">
+  <canvas id="main"></canvas>
+  <div class="tag" id="maintag">切り出し 原寸 / タップで中心を打つ</div>
+ </div>
+ <div id="zoomwrap">
+  <canvas id="zoom"></canvas>
+  <div class="tag">8倍 / ドラッグで微調整</div>
+  <div id="nudge">
+   <button class="sp"></button><button data-d="0,-1">↑</button><button class="sp"></button>
+   <button data-d="-1,0">←</button><button class="sp"></button><button data-d="1,0">→</button>
+   <button class="sp"></button><button data-d="0,1">↓</button><button class="sp"></button>
+  </div>
+ </div>
+</div>
+
+<div id="ctrl">
+ <div class="vis">
+  <button data-v="見える">見える</button>
+  <button data-v="一部隠れ">一部隠れ</button>
+  <button data-v="完全に隠れ">完全に隠れ</button>
+  <button data-v="判断できない">判断できない</button>
+ </div>
+ <div class="acts">
+  <button id="prev">← 前</button>
+  <button id="undo">取消</button>
+  <button id="skip">見送り</button>
+  <button id="confirm" disabled>確定して次へ</button>
+ </div>
+ <div id="state">
+  <span id="total">0 / 266 コマ確定</span>
+  <span id="net">接続待ち</span>
+  <span id="who2"></span>
+ </div>
+ <div id="films"></div>
+</div>
+
+<dialog id="setup">
+ <h3>最初の設定</h3>
+ <p>Supabase の Project Settings → API から2つを貼ってください。この端末に保存され、次回からは出ません。</p>
+ <label>Project URL</label><input id="sUrl" placeholder="https://xxxx.supabase.co" autocapitalize="off">
+ <label>anon public key</label><input id="sKey" placeholder="eyJ..." autocapitalize="off">
+ <label>あなたの名前（端末の見分け用）</label><input id="sWho" placeholder="tomozo">
+ <button id="sOk">はじめる</button>
+</dialog>
+
+<dialog id="menuDlg">
+ <h3>メニュー</h3>
+ <p id="mstat"></p>
+ <button id="mSync">いま同期する</button>
+ <button id="mJson">JSONで書き出す</button>
+ <button id="mCsv">CSVで書き出す</button>
+ <button id="mHint">参考予測の表示を切替</button>
+ <button id="mReset">接続設定をやり直す</button>
+ <p style="color:var(--bad)">参考予測は表示だけです。あなたが確定するまで正解にはなりません。</p>
+ <button id="mClose">閉じる</button>
+</dialog>
+
+<script src="config.js"></script>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const LS = {cfg:'capanno.cfg', queue:'capanno.queue', local:'capanno.local', who:'capanno.who'};
+const VIS = ['見える','一部隠れ','完全に隠れ','判断できない'];
+
+let D=null, rows={}, vi=0, fi=0, cfg=null, who='', showHint=false,
+    imgs=new Map(), zoomDrag=null, syncing=false, overview=false, lastOk=false,
+    mainScale = (innerWidth < 640 ? 2 : 1);   // 縦画面は既定で2倍。5pxの蓋が潰れないように。
+
+// ---------- 保存先 ----------
+const st = {
+  get(k, d){ try{ return JSON.parse(localStorage.getItem(k)) ?? d; }catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+};
+const rkey = (v,f) => v + '#' + f;
+
+function api(path, opt){
+  return fetch(cfg.url.replace(/\/+$/,'') + '/rest/v1/' + path, Object.assign({}, opt, {
+    headers: Object.assign({
+      apikey: cfg.anonKey,
+      Authorization: 'Bearer ' + cfg.anonKey,
+      'Content-Type': 'application/json'
+    }, (opt||{}).headers || {})
+  }));
+}
+
+// ---------- 一覧・進捗 ----------
+const task = () => D.tasks[vi];
+const frame = () => task().frames[fi];
+const row = (v,f) => rows[rkey(v===undefined?task().video_id:v, f===undefined?frame().f:f)] || null;
+const confirmedCount = () => Object.values(rows).filter(r => r.confirmed_by_human).length;
+const totalFrames = () => D.tasks.reduce((a,t)=>a+t.frames.length,0);
+
+function setRow(o){
+  const t = task(), fr = frame(), k = rkey(t.video_id, fr.f);
+  const now = new Date().toISOString();
+  const base = rows[k] || {
+    video_id: t.video_id, frame_index: fr.f, release_offset: fr.off,
+    x:null, y:null, bbox_w:null, bbox_h:null, visibility:'見える',
+    confirmed_by_human:false, annotator:who, created_at:now
+  };
+  rows[k] = Object.assign({}, base, o, {annotator:who, updated_at:now});
+  st.set(LS.local, rows);
+  queuePush(rows[k]);
+  render();
+}
+
+// ---------- Supabase 同期 ----------
+function queuePush(r){
+  const q = st.get(LS.queue, []);
+  const i = q.findIndex(x => x.video_id===r.video_id && x.frame_index===r.frame_index);
+  if (i >= 0) q[i] = r; else q.push(r);
+  st.set(LS.queue, q);
+  flush();
+}
+
+async function flush(){
+  if (syncing || !cfg || !cfg.url) return;
+  const q = st.get(LS.queue, []);
+  if (!q.length){ net(lastOk ? 'ok' : 'offline', 0); return; }
+  syncing = true; net('sending', q.length);
+  try{
+    const r = await api('cap_annotations?on_conflict=video_id,frame_index', {
+      method:'POST',
+      headers:{Prefer:'resolution=merge-duplicates,return=minimal'},
+      body: JSON.stringify(q.map(x => ({
+        video_id:x.video_id, frame_index:x.frame_index, release_offset:x.release_offset,
+        x:x.x, y:x.y, bbox_w:x.bbox_w, bbox_h:x.bbox_h, visibility:x.visibility,
+        confirmed_by_human:x.confirmed_by_human, annotator:x.annotator
+      })))
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + (await r.text()).slice(0,120));
+    // 送れた分だけ消す。送信中に増えた分は残す。
+    const rest = st.get(LS.queue, []).filter(x =>
+      !q.some(y => y.video_id===x.video_id && y.frame_index===x.frame_index && y.updated_at===x.updated_at));
+    st.set(LS.queue, rest);
+    lastOk = true;
+    net(rest.length ? 'queued' : 'ok', rest.length);
+  }catch(e){
+    lastOk = false;
+    net('offline', q.length, String(e.message||e));
+  }finally{ syncing = false; render(); }
+}
+
+async function pull(){
+  if (!cfg || !cfg.url) return;
+  try{
+    net('sending');
+    const r = await api('cap_annotations?select=*&limit=5000');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const arr = await r.json();
+    // 端末に残っている方が新しければ、そちらを残す。打った物を消さない。
+    arr.forEach(s => {
+      const k = rkey(s.video_id, s.frame_index), l = rows[k];
+      if (!l || !l.updated_at || (s.updated_at && s.updated_at >= l.updated_at)) rows[k] = s;
+    });
+    st.set(LS.local, rows);
+    lastOk = true;
+    net(st.get(LS.queue, []).length ? 'queued' : 'ok');
+  }catch(e){ lastOk = false; net('offline', st.get(LS.queue,[]).length, String(e.message||e)); }
+  render();
+}
+
+function net(s, n, msg){
+  const e = $('#net');
+  e.className = '';
+  if (s==='ok'){ e.textContent = '同期済み'; }
+  else if (s==='sending'){ e.textContent = '送信中…'; }
+  else if (s==='queued'){ e.className='q'; e.textContent = '未送信 ' + n + ' 件'; }
+  else { e.className='bad'; e.textContent = n ? ('通信不可 未送信 ' + n + ' 件（端末には保存済み）')
+                                              : '通信不可（端末には保存済み）'; }
+  if (msg) e.title = msg;
+}
+
+// ---------- 描画 ----------
+function img(name, dir){
+  const k = dir + name;
+  if (imgs.has(k)) return imgs.get(k);
+  const im = new Image(); im.src = dir + '/' + name; imgs.set(k, im);
+  im.onload = () => draw();
+  return im;
+}
+function preload(){
+  task().frames.forEach(f => { img(f.img,'img'); });
+  const n = D.tasks[vi+1]; if (n) n.frames.slice(0,3).forEach(f => img(f.img,'img'));
+}
+// 元画像座標 ↔ 切り出し座標
+const toCrop = p => ({x:p.x - task().ox, y:p.y - task().oy});
+const toFull = p => ({x:p.x + task().ox, y:p.y + task().oy});
+
+function fit(c, natW, natH){
+  const dpr = Math.min(devicePixelRatio||1, 2);
+  const w = c.clientWidth, h = c.clientHeight;
+  c.width = Math.round(w*dpr); c.height = Math.round(h*dpr);
+  const s = Math.min(c.width/natW, c.height/natH);
+  return {s, ox:(c.width - natW*s)/2, oy:(c.height - natH*s)/2, dpr};
+}
+
+function draw(){
+  drawMain(); drawZoom();
+}
+function centerCrop(){
+  // 写す中心。今のコマの点 → 直前のコマの点 → 以前の教示のリリース点 の順。
+  const r = row();
+  if (r && r.x != null) return toCrop(r);
+  for (let j = fi-1; j >= 0; j--){
+    const p = row(task().video_id, task().frames[j].f);
+    if (p && p.x != null) return toCrop(p);
+  }
+  return toCrop({x:task().relhint[0], y:task().relhint[1]});
+}
+function region(){
+  if (overview) return {dir:'ov', rx:0, ry:0, rw:D.W/D.ovs, rh:D.H/D.ovs};
+  const k = D.crop / mainScale, c = centerCrop();
+  return {dir:'img', rw:k, rh:k,
+          rx: Math.max(0, Math.min(D.crop-k, c.x - k/2)),
+          ry: Math.max(0, Math.min(D.crop-k, c.y - k/2))};
+}
+function drawMain(){
+  const c = $('#main'), g = c.getContext('2d'), R = region();
+  const v = fit(c, R.rw, R.rh);
+  g.imageSmoothingEnabled = false;
+  g.fillStyle = '#000'; g.fillRect(0,0,c.width,c.height);
+  const im = img(frame().img, R.dir);
+  if (im.complete && im.naturalWidth)
+    g.drawImage(im, R.rx, R.ry, R.rw, R.rh, v.ox, v.oy, R.rw*v.s, R.rh*v.s);
+  c._v = v; c._R = R;
+
+  // 元画像座標 → 画面座標
+  const put = p => {
+    const q = overview ? {x:p.x/D.ovs, y:p.y/D.ovs} : toCrop(p);
+    return [v.ox + (q.x - R.rx)*v.s, v.oy + (q.y - R.ry)*v.s];
+  };
+  const boxScale = overview ? v.s/D.ovs : v.s;
+
+  if (fi > 0){
+    const p = row(task().video_id, task().frames[fi-1].f);
+    if (p && p.x != null){
+      const t = put(p);
+      g.strokeStyle='rgba(255,255,255,.4)'; g.lineWidth=1.5*v.dpr;
+      g.beginPath(); g.arc(t[0],t[1],9*v.dpr,0,7); g.stroke();
+    }
+  }
+  if (showHint && frame().hint){
+    const h = frame().hint, t = put({x:h[0], y:h[1]});
+    g.strokeStyle='#8ab4f8'; g.lineWidth=1.5*v.dpr; g.setLineDash([4*v.dpr,4*v.dpr]);
+    g.beginPath(); g.arc(t[0],t[1],14*v.dpr,0,7); g.stroke(); g.setLineDash([]);
+    g.fillStyle='#8ab4f8'; g.font=(11*v.dpr)+'px sans-serif';
+    g.fillText('参考 '+h[4].toFixed(3), t[0]+16*v.dpr, t[1]-12*v.dpr);
+  }
+  const r = row();
+  if (r && r.x != null){
+    const t = put(r), x=t[0], y=t[1], L=16*v.dpr, G=5*v.dpr;
+    g.strokeStyle = r.confirmed_by_human ? '#34a853' : '#fbbc04';
+    g.lineWidth = 2*v.dpr;
+    g.beginPath();
+    g.moveTo(x-L,y); g.lineTo(x-G,y); g.moveTo(x+G,y); g.lineTo(x+L,y);
+    g.moveTo(x,y-L); g.lineTo(x,y-G); g.moveTo(x,y+G); g.lineTo(x,y+L);
+    g.stroke();
+    if (r.bbox_w) g.strokeRect(x-r.bbox_w*boxScale/2, y-r.bbox_h*boxScale/2,
+                               r.bbox_w*boxScale, r.bbox_h*boxScale);
+  }
+}
+function drawZoom(){
+  const c = $('#zoom'), g = c.getContext('2d'), Z = 8;
+  const dpr = Math.min(devicePixelRatio||1, 2);
+  c.width = Math.round(c.clientWidth*dpr); c.height = Math.round(c.clientHeight*dpr);
+  g.imageSmoothingEnabled = false;
+  g.fillStyle='#000'; g.fillRect(0,0,c.width,c.height);
+  const r = row();
+  const cp = (r && r.x != null) ? toCrop(r) : {x:D.crop/2, y:D.crop/2};
+  const im = img(frame().img, 'img');
+  const spanX = c.width/(Z*dpr), spanY = c.height/(Z*dpr);
+  if (im.complete && im.naturalWidth)
+    g.drawImage(im, cp.x-spanX/2, cp.y-spanY/2, spanX, spanY, 0, 0, c.width, c.height);
+  g.strokeStyle='rgba(255,255,255,.22)'; g.lineWidth=1;
+  g.beginPath(); g.moveTo(c.width/2,0); g.lineTo(c.width/2,c.height);
+  g.moveTo(0,c.height/2); g.lineTo(c.width,c.height/2); g.stroke();
+  if (r && r.x != null){
+    g.strokeStyle = r.confirmed_by_human ? '#34a853' : '#fbbc04';
+    g.lineWidth = 2*dpr;
+    g.beginPath(); g.arc(c.width/2, c.height/2, 8*dpr, 0, 7); g.stroke();
+    if (r.bbox_w){
+      const w = r.bbox_w*Z*dpr, h = r.bbox_h*Z*dpr;
+      g.strokeRect(c.width/2-w/2, c.height/2-h/2, w, h);
+    }
+  } else {
+    g.fillStyle='#9aa0a6'; g.font=(12*dpr)+'px sans-serif';
+    g.fillText('まだ打っていません', 10*dpr, c.height-10*dpr);
+  }
+  c._Z = Z*dpr;
+}
+
+function render(){
+  const t = task(), fr = frame(), r = row();
+  $('#vid').textContent = t.video_id;
+  $('#off').textContent = 'リリース' + (fr.off>=0?'+':'') + fr.off;
+  $('#fidx').textContent = 'コマ ' + fr.f;
+  const vc = t.frames.filter(f => (row(t.video_id,f.f)||{}).confirmed_by_human).length;
+  $('#vprog').textContent = 'この投球 ' + vc + '/' + t.frames.length
+                          + '　（' + (vi+1) + '/' + D.tasks.length + '本目）';
+  const n = confirmedCount(), tot = totalFrames();
+  $('#total').textContent = n + ' / ' + tot + ' コマ確定';
+  $('#bar').style.width = (n/tot*100) + '%';
+  $('#who2').textContent = who ? who : '';
+  $('#confirm').disabled = !(r && (r.x != null || r.visibility==='完全に隠れ' || r.visibility==='判断できない'));
+  document.querySelectorAll('.vis button').forEach(b =>
+    b.classList.toggle('on', !!r && r.visibility === b.dataset.v));
+  $('#maintag').textContent = overview ? '全体図（1/3・参考のみ・押すと戻る）'
+    : (mainScale > 1 ? mainScale + '倍表示 / タップで中心を打つ（押すと全体図）'
+                     : '切り出し全体 / タップで中心を打つ（押すと2倍）');
+
+  const fw = $('#films'); fw.innerHTML='';
+  t.frames.forEach((f,i) => {
+    const d = document.createElement('div');
+    const rr = row(t.video_id, f.f);
+    d.className = 'fr' + (i===fi?' cur':'') + (rr ? (rr.confirmed_by_human?' done':' draft') : '');
+    d.textContent = (f.off>=0?'+':'') + f.off;
+    d.onclick = () => { fi = i; draw(); render(); };
+    fw.append(d);
+  });
+  const cur = fw.querySelector('.cur'); if (cur) cur.scrollIntoView({block:'nearest', inline:'center'});
+  draw();
+}
+
+// ---------- 移動 ----------
+function go(d){
+  const t = task();
+  if (fi+d >= 0 && fi+d < t.frames.length) fi += d;
+  else if (d>0 && vi+1 < D.tasks.length){ vi++; fi=0; preload(); }
+  else if (d<0 && vi>0){ vi--; fi = D.tasks[vi].frames.length-1; preload(); }
+  overview = false; render();
+}
+function firstUndone(){
+  for (let i=0;i<D.tasks.length;i++)
+    for (let j=0;j<D.tasks[i].frames.length;j++){
+      const r = rows[rkey(D.tasks[i].video_id, D.tasks[i].frames[j].f)];
+      if (!r || !r.confirmed_by_human){ vi=i; fi=j; return; }
+    }
+}
+
+// ---------- 入力 ----------
+$('#main').addEventListener('pointerdown', e => {
+  if (overview) return;          // 全体図は参考。打つのは原寸だけ。
+  const c = $('#main'), v = c._v, R = c._R, rect = c.getBoundingClientRect();
+  const px = (e.clientX-rect.left)*v.dpr, py = (e.clientY-rect.top)*v.dpr;
+  const ix = R.rx + (px - v.ox)/v.s, iy = R.ry + (py - v.oy)/v.s;
+  if (ix < 0 || iy < 0 || ix > D.crop || iy > D.crop) return;
+  const f = toFull({x:ix, y:iy});
+  setRow({x:+f.x.toFixed(1), y:+f.y.toFixed(1), confirmed_by_human:false});
+});
+
+// 拡大側はドラッグで微調整。1px未満まで動かせる。
+$('#zoom').addEventListener('pointerdown', e => {
+  const r = row(); if (!r || r.x==null) return;
+  zoomDrag = {sx:e.clientX, sy:e.clientY, x:r.x, y:r.y};
+  $('#zoom').setPointerCapture(e.pointerId);
+});
+$('#zoom').addEventListener('pointermove', e => {
+  if (!zoomDrag) return;
+  const c = $('#zoom'), dpr = Math.min(devicePixelRatio||1,2);
+  const k = c._Z / dpr;
+  setRow({x:+(zoomDrag.x - (e.clientX-zoomDrag.sx)/k).toFixed(2),
+          y:+(zoomDrag.y - (e.clientY-zoomDrag.sy)/k).toFixed(2),
+          confirmed_by_human:false});
+  e.preventDefault();
+});
+addEventListener('pointerup', () => { zoomDrag = null; });
+
+document.querySelectorAll('#nudge button[data-d]').forEach(b => b.onclick = () => {
+  const r = row(); if (!r || r.x==null) return;
+  const d = b.dataset.d.split(',').map(Number);
+  setRow({x:+(r.x+d[0]).toFixed(2), y:+(r.y+d[1]).toFixed(2), confirmed_by_human:false});
+});
+document.querySelectorAll('.vis button').forEach(b => b.onclick = () => {
+  const v = b.dataset.v, r = row();
+  // 隠れて見えないコマは位置なしで残す。見えない物を推測させない。
+  if ((v==='完全に隠れ' || v==='判断できない') && (!r || r.x==null))
+    setRow({x:null, y:null, visibility:v, confirmed_by_human:false});
+  else setRow({visibility:v, confirmed_by_human:false});
+});
+$('#confirm').onclick = () => { setRow({confirmed_by_human:true}); go(1); };
+$('#skip').onclick = () => go(1);
+$('#prev').onclick = () => go(-1);
+$('#undo').onclick = () => {
+  const r = row(); if (!r) return;
+  setRow({x:null, y:null, bbox_w:null, bbox_h:null, visibility:'見える', confirmed_by_human:false});
+};
+function cycleView(){
+  if (overview){ overview = false; mainScale = 1; }
+  else if (mainScale === 1) mainScale = 2;
+  else { overview = true; }
+  render();
+}
+$('#maintag').onclick = cycleView;
+$('#mainwrap').addEventListener('dblclick', cycleView);
+
+addEventListener('keydown', e => {
+  if (e.key==='ArrowRight'){ go(1); e.preventDefault(); }
+  else if (e.key==='ArrowLeft'){ go(-1); e.preventDefault(); }
+  else if (e.key==='Enter'){ if(!$('#confirm').disabled) $('#confirm').click(); }
+});
+addEventListener('resize', () => render());
+addEventListener('online', flush);
+setInterval(flush, 20000);
+
+// ---------- 書き出し ----------
+function download(name, text, type){
+  const b = new Blob([text], {type});
+  const u = URL.createObjectURL(b), a = document.createElement('a');
+  a.href = u; a.download = name; document.body.append(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(u); a.remove(); }, 1000);
+}
+const COLS = ['video_id','frame_index','release_offset','x','y','bbox_w','bbox_h',
+              'visibility','confirmed_by_human','annotator','created_at','updated_at'];
+function exportRows(){
+  // 人が確定した物だけを出す。下書きは正解にしない。
+  return Object.values(rows).filter(r => r.confirmed_by_human)
+    .sort((a,b) => a.video_id.localeCompare(b.video_id) || a.frame_index-b.frame_index);
+}
+$('#mJson').onclick = () => download('annotations.json',
+  JSON.stringify(exportRows(), null, 1), 'application/json');
+$('#mCsv').onclick = () => {
+  const rs = exportRows();
+  const esc = v => v==null ? '' : (/[",\n]/.test(String(v)) ? '"'+String(v).replace(/"/g,'""')+'"' : String(v));
+  download('annotations.csv',
+    '﻿' + [COLS.join(',')].concat(rs.map(r => COLS.map(c => esc(r[c])).join(','))).join('\n'),
+    'text/csv');
+};
+$('#mSync').onclick = async () => { await flush(); await pull(); $('#mstat').textContent = stat(); };
+$('#mHint').onclick = () => { showHint = !showHint; draw(); $('#mstat').textContent = stat(); };
+$('#mReset').onclick = () => { localStorage.removeItem(LS.cfg); location.reload(); };
+$('#mClose').onclick = () => $('#menuDlg').close();
+function stat(){
+  const q = st.get(LS.queue, []).length;
+  return '確定 ' + confirmedCount() + ' / ' + totalFrames() + ' コマ　未送信 ' + q + ' 件　'
+       + '参考予測 ' + (showHint ? '表示' : '非表示');
+}
+$('#menu').onclick = () => { $('#mstat').textContent = stat(); $('#menuDlg').showModal(); };
+
+// ---------- 起動 ----------
+async function boot(){
+  D = await (await fetch('data/tasks.json')).json();
+  rows = st.get(LS.local, {});
+  cfg = st.get(LS.cfg, null);
+  const c = window.CAPANNO_CONFIG || {};
+  if (!cfg && c.url && c.anonKey) cfg = {url:c.url, anonKey:c.anonKey};
+  who = st.get(LS.who, '') || '';
+  if (!cfg || !cfg.url || !cfg.anonKey || !who){
+    $('#sUrl').value = (cfg&&cfg.url) || c.url || '';
+    $('#sKey').value = (cfg&&cfg.anonKey) || c.anonKey || '';
+    $('#sWho').value = who;
+    $('#setup').showModal();
+    $('#sOk').onclick = () => {
+      const u = $('#sUrl').value.trim(), k = $('#sKey').value.trim(), w = $('#sWho').value.trim();
+      if (!u || !k || !w){ alert('3つとも入れてください'); return; }
+      cfg = {url:u, anonKey:k}; who = w;
+      st.set(LS.cfg, cfg); st.set(LS.who, who);
+      $('#setup').close(); start();
+    };
+    return;
+  }
+  start();
+}
+async function start(){
+  await pull();
+  firstUndone();
+  preload(); render();
+  flush();
+}
+boot();
+</script>
+</html>
