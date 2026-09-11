@@ -20,7 +20,9 @@
  .sub{color:var(--dim);font-size:12px}
  #barwrap{height:4px;background:#000;border-radius:2px;margin-top:5px;overflow:hidden}
  #bar{height:100%;width:0;background:var(--ok);transition:width .2s}
- #views{flex:1;display:flex;min-height:0;gap:6px;padding:6px}
+ #views{flex:1;display:flex;min-height:240px;gap:6px;padding:6px}
+ #mainwrap{min-height:120px} #zoomwrap{min-height:110px}
+ #ctrl{max-height:46vh;overflow:auto}
  #mainwrap,#zoomwrap{position:relative;flex:1;min-width:0;background:#000;border-radius:8px;overflow:hidden}
  canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
  .tag{position:absolute;left:6px;top:6px;background:rgba(0,0,0,.6);color:var(--dim);
@@ -51,6 +53,12 @@
  .fr.draft{background:var(--draft);color:#000;border-color:var(--draft)}
  .fr.done{background:var(--ok);color:#000;border-color:var(--ok)}
  .fr.cur{outline:2px solid var(--hint);outline-offset:1px}
+ #vids{display:flex;gap:3px;flex-wrap:nowrap;overflow-x:auto;margin-top:5px;padding-bottom:2px}
+ .vd{flex:none;padding:3px 7px;border:1px solid var(--line);border-radius:5px;font-size:11px;
+   background:#232830;font-variant-numeric:tabular-nums;white-space:nowrap}
+ .vd.part{background:#5b4a12;color:#fff}
+ .vd.done{background:var(--ok);color:#000;border-color:var(--ok)}
+ .vd.cur{outline:2px solid var(--hint);outline-offset:1px}
  dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:10px;
    max-width:min(92vw,520px);padding:16px}
  dialog::backdrop{background:rgba(0,0,0,.7)}
@@ -108,6 +116,7 @@
   <span id="net">接続待ち</span>
   <span id="who2"></span>
  </div>
+ <div id="vids"></div>
  <div id="films"></div>
 </div>
 
@@ -138,6 +147,11 @@
 const $ = s => document.querySelector(s);
 const LS = {cfg:'capanno.cfg', queue:'capanno.queue', local:'capanno.local', who:'capanno.who'};
 const VIS = ['見える','一部隠れ','完全に隠れ','判断できない'];
+// ?set=trainval で train/val 10本(140コマ)、既定は test 19本(266コマ)。
+// 保存先の表は共通。video_id が別なので混ざらない。
+const SET = (new URLSearchParams(location.search).get('set') === 'trainval') ? 'trainval' : 'test';
+const TASKFILE = SET === 'trainval' ? 'data/tasks_trainval.json' : 'data/tasks.json';
+const SETNAME = SET === 'trainval' ? 'train/val 10本（学習用）' : 'test 19本（評価用）';
 
 let D=null, rows={}, vi=0, fi=0, cfg=null, who='', showHint=false,
     imgs=new Map(), zoomDrag=null, syncing=false, overview=false, lastOk=false,
@@ -164,10 +178,15 @@ function api(path, opt){
 const task = () => D.tasks[vi];
 const frame = () => task().frames[fi];
 const row = (v,f) => rows[rkey(v===undefined?task().video_id:v, f===undefined?frame().f:f)] || null;
-const confirmedCount = () => Object.values(rows).filter(r => r.confirmed_by_human).length;
+// 進捗は今開いているセットのコマだけを数える。両方の打点が同じ表に入るため。
+const confirmedCount = () => D.tasks.reduce((a,t) =>
+  a + t.frames.filter(f => (rows[rkey(t.video_id, f.f)]||{}).confirmed_by_human).length, 0);
 const totalFrames = () => D.tasks.reduce((a,t)=>a+t.frames.length,0);
 
 function setRow(o){
+  // 位置は数値か null のどちらかしか受け付けない。NaN を正解に混ぜない。
+  if ('x' in o && o.x !== null && !isFinite(o.x)) return;
+  if ('y' in o && o.y !== null && !isFinite(o.y)) return;
   const t = task(), fr = frame(), k = rkey(t.video_id, fr.f);
   const now = new Date().toISOString();
   const base = rows[k] || {
@@ -369,7 +388,7 @@ function drawZoom(){
 
 function render(){
   const t = task(), fr = frame(), r = row();
-  $('#vid').textContent = t.video_id;
+  $('#vid').textContent = t.video_id + (t.split ? '（' + t.split + '）' : '');
   $('#off').textContent = 'リリース' + (fr.off>=0?'+':'') + fr.off;
   $('#fidx').textContent = 'コマ ' + fr.f;
   const vc = t.frames.filter(f => (row(t.video_id,f.f)||{}).confirmed_by_human).length;
@@ -395,6 +414,16 @@ function render(){
     d.onclick = () => { fi = i; draw(); render(); };
     fw.append(d);
   });
+  const vw = $('#vids'); vw.innerHTML='';
+  D.tasks.forEach((x,i) => {
+    const n = x.frames.filter(f => (rows[rkey(x.video_id,f.f)]||{}).confirmed_by_human).length;
+    const d = document.createElement('div');
+    d.className = 'vd' + (i===vi?' cur':'') + (n===x.frames.length?' done':(n?' part':''));
+    d.textContent = x.vid + (x.split ? ' ' + x.split[0] : '') + ' ' + n + '/' + x.frames.length;
+    d.onclick = () => { vi = i; fi = 0; overview = false; preload(); render(); };
+    vw.append(d);
+  });
+  const cv = vw.querySelector('.cur'); if (cv) cv.scrollIntoView({block:'nearest', inline:'center'});
   const cur = fw.querySelector('.cur'); if (cur) cur.scrollIntoView({block:'nearest', inline:'center'});
   draw();
 }
@@ -421,6 +450,7 @@ $('#main').addEventListener('pointerdown', e => {
   const c = $('#main'), v = c._v, R = c._R, rect = c.getBoundingClientRect();
   const px = (e.clientX-rect.left)*v.dpr, py = (e.clientY-rect.top)*v.dpr;
   const ix = R.rx + (px - v.ox)/v.s, iy = R.ry + (py - v.oy)/v.s;
+  if (!isFinite(ix) || !isFinite(iy)) return;      // 画面が潰れている間は打たない
   if (ix < 0 || iy < 0 || ix > D.crop || iy > D.crop) return;
   const f = toFull({x:ix, y:iy});
   setRow({x:+f.x.toFixed(1), y:+f.y.toFixed(1), confirmed_by_human:false});
@@ -491,15 +521,17 @@ const COLS = ['video_id','frame_index','release_offset','x','y','bbox_w','bbox_h
               'visibility','confirmed_by_human','annotator','created_at','updated_at'];
 function exportRows(){
   // 人が確定した物だけを出す。下書きは正解にしない。
-  return Object.values(rows).filter(r => r.confirmed_by_human)
+  const mine = new Set(D.tasks.flatMap(t => t.frames.map(f => rkey(t.video_id, f.f))));
+  return Object.values(rows)
+    .filter(r => r.confirmed_by_human && mine.has(rkey(r.video_id, r.frame_index)))
     .sort((a,b) => a.video_id.localeCompare(b.video_id) || a.frame_index-b.frame_index);
 }
-$('#mJson').onclick = () => download('annotations.json',
+$('#mJson').onclick = () => download('annotations_'+SET+'.json',
   JSON.stringify(exportRows(), null, 1), 'application/json');
 $('#mCsv').onclick = () => {
   const rs = exportRows();
   const esc = v => v==null ? '' : (/[",\n]/.test(String(v)) ? '"'+String(v).replace(/"/g,'""')+'"' : String(v));
-  download('annotations.csv',
+  download('annotations_'+SET+'.csv',
     '﻿' + [COLS.join(',')].concat(rs.map(r => COLS.map(c => esc(r[c])).join(','))).join('\n'),
     'text/csv');
 };
@@ -509,14 +541,15 @@ $('#mReset').onclick = () => { localStorage.removeItem(LS.cfg); location.reload(
 $('#mClose').onclick = () => $('#menuDlg').close();
 function stat(){
   const q = st.get(LS.queue, []).length;
-  return '確定 ' + confirmedCount() + ' / ' + totalFrames() + ' コマ　未送信 ' + q + ' 件　'
-       + '参考予測 ' + (showHint ? '表示' : '非表示');
+  return SETNAME + '　確定 ' + confirmedCount() + ' / ' + totalFrames()
+       + ' コマ　未送信 ' + q + ' 件　参考予測 ' + (showHint ? '表示' : '非表示');
 }
 $('#menu').onclick = () => { $('#mstat').textContent = stat(); $('#menuDlg').showModal(); };
 
 // ---------- 起動 ----------
 async function boot(){
-  D = await (await fetch('data/tasks.json')).json();
+  D = await (await fetch(TASKFILE)).json();
+  document.title = SETNAME + ' の教示';
   rows = st.get(LS.local, {});
   cfg = st.get(LS.cfg, null);
   const c = window.CAPANNO_CONFIG || {};
