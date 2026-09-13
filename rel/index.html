@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>リリース選択と蓋の教示</title>
+<style>
+ :root{--bg:#14161a;--panel:#1b1e24;--fg:#e8eaed;--dim:#9aa0a6;--line:#2f333c;
+       --ok:#34a853;--draft:#fbbc04;--hint:#8ab4f8;--bad:#e8735a}
+ *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+ html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--fg);
+   font:15px/1.5 -apple-system,"Hiragino Kaku Gothic ProN","Yu Gothic UI",system-ui,sans-serif}
+ body{display:flex;flex-direction:column;
+   padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+ #top{padding:6px 10px;background:var(--panel);border-bottom:1px solid var(--line);flex:none;position:relative}
+ #vid{font-size:17px;font-weight:700}
+ #phase{font-size:15px;font-weight:700;color:var(--hint);margin-left:10px}
+ .sub{color:var(--dim);font-size:12px}
+ #menu{position:absolute;right:8px;top:6px;background:none;border:none;color:var(--dim);font-size:20px}
+ #barwrap{height:4px;background:#000;border-radius:2px;margin-top:5px;overflow:hidden}
+ #bar{height:100%;width:0;background:var(--ok);transition:width .2s}
+ #rule{padding:6px 10px;background:#1f2b1f;border-bottom:1px solid var(--line);font-size:13px;flex:none}
+ #body{flex:1;display:flex;min-height:0;gap:6px;padding:6px}
+ .pane{position:relative;background:#000;border-radius:8px;overflow:hidden;min-height:110px}
+ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
+ .tag{position:absolute;left:6px;top:6px;background:rgba(0,0,0,.6);color:var(--dim);
+   font-size:11px;padding:3px 8px;border-radius:4px}
+ #grid{flex:1;overflow:auto;display:grid;gap:5px;padding:2px}
+ .cell{position:relative;background:#000;border:2px solid var(--line);border-radius:6px;
+   overflow:hidden;aspect-ratio:1/1}
+ .cell img{width:100%;height:100%;object-fit:cover;display:block}
+ .cell span{position:absolute;left:3px;bottom:2px;background:rgba(0,0,0,.65);
+   color:#dcdcdc;font-size:11px;padding:0 5px;border-radius:3px;font-variant-numeric:tabular-nums}
+ .cell.sel{border-color:var(--hint);box-shadow:0 0 0 2px var(--hint) inset}
+ #ctrl{flex:none;background:var(--panel);border-top:1px solid var(--line);padding:6px 8px 8px;max-height:48vh;overflow:auto}
+ .row{display:flex;gap:5px;margin-bottom:6px}
+ .row button{flex:1;padding:11px 4px;font-size:14px;background:#232830;color:var(--fg);
+   border:1px solid var(--line);border-radius:7px}
+ .row button.on{background:var(--hint);color:#000;border-color:var(--hint);font-weight:700}
+ #go{flex:2.2;background:var(--ok);color:#05210d;font-weight:700;border-color:var(--ok);font-size:16px}
+ #go:disabled{background:#2a2f37;color:#6b7280;border-color:var(--line)}
+ #films{display:flex;gap:2px;flex-wrap:nowrap;overflow-x:auto;margin-top:5px;padding-bottom:2px}
+ .fr{flex:none;min-width:32px;height:26px;border:1px solid var(--line);border-radius:4px;font-size:11px;
+   display:flex;align-items:center;justify-content:center;background:#232830;font-variant-numeric:tabular-nums}
+ .fr.draft{background:var(--draft);color:#000}.fr.done{background:var(--ok);color:#000}
+ .fr.cur{outline:2px solid var(--hint);outline-offset:1px}
+ #vids{display:flex;gap:3px;flex-wrap:nowrap;overflow-x:auto;margin-top:5px;padding-bottom:2px}
+ .vd{flex:none;padding:3px 7px;border:1px solid var(--line);border-radius:5px;font-size:11px;
+   background:#232830;white-space:nowrap;font-variant-numeric:tabular-nums}
+ .vd.done{background:var(--ok);color:#000}.vd.part{background:#5b4a12;color:#fff}
+ .vd.cur{outline:2px solid var(--hint)}
+ #state{display:flex;gap:10px;justify-content:space-between;font-size:12px;color:var(--dim);
+   margin-top:5px;flex-wrap:wrap}
+ #net.bad{color:var(--bad)}#net.q{color:var(--draft)}
+ #nudge{position:absolute;right:6px;bottom:6px;display:grid;
+   grid-template-columns:repeat(3,40px);grid-template-rows:repeat(3,40px);gap:3px}
+ #nudge button{background:rgba(40,44,52,.92);color:var(--fg);border:1px solid var(--line);
+   border-radius:6px;font-size:15px;padding:0}
+ #nudge .sp{visibility:hidden}
+ dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:10px;
+   max-width:min(92vw,560px);padding:16px}
+ dialog::backdrop{background:rgba(0,0,0,.7)}
+ dialog input{width:100%;padding:9px;margin:4px 0 10px;background:#0e1014;color:var(--fg);
+   border:1px solid var(--line);border-radius:6px;font-size:14px}
+ dialog button{padding:10px 14px;background:#232830;color:var(--fg);border:1px solid var(--line);
+   border-radius:7px;font-size:14px;margin-right:6px}
+ dialog h3{margin:0 0 8px}dialog p{color:var(--dim);font-size:13px;margin:6px 0}
+ /* スマホは1枚を大きく。タブレットは2ペイン。 */
+ body.mobile #body{flex-direction:column}
+ body.mobile #mainwrap{flex:1.9}
+ body.mobile #zoomwrap{flex:1}
+ body.mobile #grid{grid-template-columns:repeat(3,1fr)}
+ body.tablet #body{flex-direction:row}
+ body.tablet #left{flex:0 0 220px;display:flex;flex-direction:column;gap:5px;overflow:auto}
+ body.tablet #mainwrap{flex:1}
+ body.tablet #zoomwrap{flex:0 0 300px}
+ body.tablet #grid{grid-template-columns:repeat(4,1fr)}
+ /* リリース選択のとき、大きい画面と一覧を並べる */
+ body.tablet.relphase #body{flex-direction:row}
+ body.tablet.relphase #grid{flex:0 0 46%}
+ body.tablet.relphase #mainwrap{flex:1}
+ body.mobile.relphase #body{flex-direction:column}
+ body.mobile.relphase #mainwrap{flex:1.3}
+ body.mobile.relphase #grid{flex:1}
+ body.mobile #left{display:none}
+ .thumb{position:relative;background:#000;border:2px solid var(--line);border-radius:6px;
+   overflow:hidden;aspect-ratio:1/1;flex:none}
+ .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+ .thumb span{position:absolute;left:3px;bottom:2px;background:rgba(0,0,0,.65);color:#dcdcdc;
+   font-size:11px;padding:0 5px;border-radius:3px}
+ .thumb.done{border-color:var(--ok)}.thumb.draft{border-color:var(--draft)}
+ .thumb.cur{box-shadow:0 0 0 2px var(--hint) inset}
+</style>
+
+<div id="top">
+ <button id="menu">☰</button>
+ <span id="vid">…</span><span id="phase"></span>
+ <span class="sub" id="info"></span>
+ <div id="barwrap"><div id="bar"></div></div>
+</div>
+<div id="rule"></div>
+
+<div id="body">
+ <div id="left"></div>
+ <div class="pane" id="mainwrap" style="flex:1">
+  <canvas id="main"></canvas><div class="tag" id="maintag"></div>
+ </div>
+ <div class="pane" id="zoomwrap" style="flex:1">
+  <canvas id="zoom"></canvas><div class="tag">8倍</div>
+  <div id="nudge">
+   <button class="sp"></button><button data-d="0,-1">↑</button><button class="sp"></button>
+   <button data-d="-1,0">←</button><button class="sp"></button><button data-d="1,0">→</button>
+   <button class="sp"></button><button data-d="0,1">↓</button><button class="sp"></button>
+  </div>
+ </div>
+ <div id="grid" style="display:none"></div>
+</div>
+
+<div id="ctrl">
+ <div class="row" id="visrow">
+  <button data-v="見える">見える (V)</button>
+  <button data-v="一部隠れ">一部隠れ (P)</button>
+  <button data-v="完全に隠れ">完全に隠れ (O)</button>
+ </div>
+ <div class="row" id="actrow">
+  <button id="prev">← 前</button>
+  <button id="undo">取消</button>
+  <button id="skip">見送り</button>
+  <button id="go" disabled>確定して次へ</button>
+ </div>
+ <div class="row" id="relrow" style="display:none">
+  <button id="back12">◀ 前を見る</button>
+  <button id="fwd12">後を見る ▶</button>
+  <button id="relgo" disabled>このコマで確定</button>
+ </div>
+ <div id="state"><span id="total"></span><span id="net">接続待ち</span><span id="who2"></span></div>
+ <div id="vids"></div>
+ <div id="films"></div>
+</div>
+
+<dialog id="setup">
+ <h3>最初の設定</h3>
+ <p>Supabase の Project Settings → API から2つを貼ってください。この端末に保存されます。</p>
+ <label>Project URL</label><input id="sUrl" placeholder="https://xxxx.supabase.co" autocapitalize="off">
+ <label>anon public key</label><input id="sKey" placeholder="eyJ..." autocapitalize="off">
+ <label>あなたの名前</label><input id="sWho" placeholder="tomozo">
+ <button id="sOk">はじめる</button>
+</dialog>
+
+<dialog id="menuDlg">
+ <h3>メニュー</h3>
+ <p id="mstat"></p>
+ <button id="mMode">スマホ / タブレット 切替</button>
+ <button id="mBig">スマホ: 一覧 / 1コマ拡大 切替</button>
+ <button id="mSync">いま同期する</button>
+ <button id="mJson">JSONで書き出す</button>
+ <button id="mRedo">この投球のリリースを選び直す</button>
+ <button id="mReset">接続設定をやり直す</button>
+ <p style="color:var(--bad)">自動推定や既存のリリース値は表示していません。映像だけで判断してください。</p>
+ <button id="mClose">閉じる</button>
+</dialog>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</html>
