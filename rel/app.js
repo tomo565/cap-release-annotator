@@ -8,6 +8,7 @@
    ・保存形式はスマホとタブレットで同じ。途中で端末を変えても続けられる。 */
 
 const $ = s => document.querySelector(s);
+const APP_VER = '2';   // 保存バグ修正版
 const LS = {cfg: 'relui.cfg', who: 'relui.who', mode: 'relui.mode',
             rel: 'relui.rel', pos: 'relui.pos', q: 'relui.queue'};
 const TEST_VIDS = ['184258', '184307', '184442', '184917', '184956', '185159', '185349', '185402',
@@ -59,34 +60,61 @@ async function flush() {
   if (!q.length) { net(lastOk ? 'ok' : 'offline', 0); return; }
   syncing = true; net('sending', q.length);
   try {
-    const rel = q.filter(x => x.kind === 'rel').map(x => strip(x.row));
-    const pos = q.filter(x => x.kind === 'pos').map(x => strip(x.row));
+    const rel = q.filter(x => x.kind === 'rel').map(x => relRow(x.row));
+    // 他 set の行は送らない（念のため）
+    const pos = q.filter(x => x.kind === 'pos' && x.row.set_name === SET()).map(x => posRow(x.row));
     if (rel.length) {
       const r = await api('cap_release_marks?on_conflict=video_id,set_name',
         {method: 'POST', headers: {Prefer: 'resolution=merge-duplicates,return=minimal'},
          body: JSON.stringify(rel)});
-      if (!r.ok) throw new Error('release ' + r.status + ' ' + (await r.text()).slice(0, 120));
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' リリース: ' + (await r.text()).slice(0, 160));
     }
     if (pos.length) {
-      const r = await api('cap_annotations?on_conflict=video_id,frame_index',
+      const r = await api('cap_release_positions?on_conflict=video_id,set_name,frame_index',
         {method: 'POST', headers: {Prefer: 'resolution=merge-duplicates,return=minimal'},
          body: JSON.stringify(pos)});
-      if (!r.ok) throw new Error('pos ' + r.status + ' ' + (await r.text()).slice(0, 120));
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' 位置: ' + (await r.text()).slice(0, 160));
     }
-    const rest = st.get(LS.q, []).filter(x => !q.some(y => y.kind === x.kind && y.key === x.key
+    const rest = st.get(LS.q, []).filter(x => !(x.kind === 'pos' && x.row.set_name !== SET()))
+                                 .filter(x => !q.some(y => y.kind === x.kind && y.key === x.key
                                                      && y.row.updated_at === x.row.updated_at));
     st.set(LS.q, rest);
     lastOk = true; net(rest.length ? 'queued' : 'ok', rest.length);
   } catch (e) {
-    lastOk = false; net('offline', q.length, String(e.message || e));
+    lastOk = false;
+    const m = String(e.message || e);
+    net(m.startsWith('HTTP') ? 'error' : 'offline', q.length, m);
   } finally { syncing = false; render(); }
 }
-function strip(r) { const o = Object.assign({}, r); delete o.__key; return o; }
+// 送る列を決め打ちにする。読み込んだ行の id や created_at を送ると、Supabase が送信全体を拒否する。
+// 全行が同じ列を持たないと一括送信も拒否されるので、無い列には既定値を入れる。
+function relRow(r) {
+  return {video_id: r.video_id, set_name: r.set_name,
+          release_frame_human: r.release_frame_human,
+          release_confirmed_by_human: r.release_confirmed_by_human === true,
+          expanded: r.expanded === true,
+          seconds_spent: (r.seconds_spent === undefined ? null : r.seconds_spent),
+          ui_mode: r.ui_mode || null, annotator: r.annotator || null};
+}
+function posRow(r) {
+  const occ = r.visibility === '完全に隠れ';
+  return {video_id: r.video_id, set_name: r.set_name, frame_index: r.frame_index,
+          release_offset: r.release_offset,
+          x: occ ? null : (r.x === undefined ? null : r.x),
+          y: occ ? null : (r.y === undefined ? null : r.y),
+          bbox_w: (r.bbox_w === undefined ? null : r.bbox_w),
+          bbox_h: (r.bbox_h === undefined ? null : r.bbox_h),
+          visibility: r.visibility || '見える',
+          confirmed_by_human: r.confirmed_by_human === true,
+          annotator: r.annotator || null};
+}
 function net(s, n, msg) {
   const e = $('#net'); e.className = '';
   if (s === 'ok') e.textContent = '同期済み';
   else if (s === 'sending') e.textContent = '送信中…';
   else if (s === 'queued') { e.className = 'q'; e.textContent = '未送信 ' + n + ' 件'; }
+  else if (s === 'error') { e.className = 'bad';
+    e.textContent = '★保存エラー 未送信 ' + n + ' 件（端末に保存済み） ' + (msg || '').slice(0, 90); }
   else { e.className = 'bad'; e.textContent = n ? ('通信不可 未送信 ' + n + ' 件（端末に保存済み）')
                                                : '通信不可（端末に保存済み）'; }
   if (msg) e.title = msg;
@@ -100,7 +128,7 @@ async function pull() {
       const l = REL[row.video_id];
       if (!l || !l.updated_at || (row.updated_at && row.updated_at >= l.updated_at)) REL[row.video_id] = row;
     }
-    const r2 = await api('cap_annotations?select=*&limit=5000');
+    const r2 = await api('cap_release_positions?select=*&set_name=eq.' + encodeURIComponent(SET()) + '&limit=5000');
     if (r2.ok) for (const row of await r2.json()) {
       const k = posKey(row.video_id, row.frame_index), l = POS[k];
       if (!l || !l.updated_at || (row.updated_at && row.updated_at >= l.updated_at)) POS[k] = row;
@@ -461,7 +489,8 @@ $('#mJson').onclick = () => {
 function stat() {
   const q = st.get(LS.q, []).length;
   const nr = Object.values(REL).filter(r => r.release_confirmed_by_human).length;
-  return SET() + '　リリース確定 ' + nr + '/' + D.tasks.length + ' 本　未送信 ' + q + ' 件　表示 ' + mode;
+  return '版 ' + APP_VER + '　' + SET() + '　リリース確定 ' + nr + '/' + D.tasks.length
+         + ' 本　未送信 ' + q + ' 件　表示 ' + mode;
 }
 $('#menu').onclick = () => { $('#mstat').textContent = stat(); $('#menuDlg').showModal(); };
 
@@ -475,6 +504,11 @@ async function boot() {
     throw new Error('test leak');
   }
   REL = st.get(LS.rel, {}); POS = st.get(LS.pos, {});
+  // 旧版は cap_annotations を丸ごと読み込んでいたので、train/val や test の旧正解が端末に残っている。
+  // 今の set 以外の位置は捨てる。残すと「入力済み」に見えて答えの誘導になる。
+  for (const k of Object.keys(POS)) if (POS[k].set_name !== D.set) delete POS[k];
+  for (const k of Object.keys(REL)) if (REL[k].set_name !== D.set) delete REL[k];
+  st.set(LS.pos, POS); st.set(LS.rel, REL);
   mode = st.get(LS.mode, null) || (innerWidth >= 700 ? 'tablet' : 'mobile');
   cfg = st.get(LS.cfg, null);
   const c = window.RELUI_CONFIG || {};
