@@ -17,7 +17,7 @@
    ・保存形式はスマホとタブレットで同じ。途中で端末を変えても続けられる。 */
 
 const $ = s => document.querySelector(s);
-const APP_VER = '4';   // 位置合わせ・自由な前後移動・使用不可 に対応した版
+const APP_VER = '4.1';   // 位置合わせ・自由な前後移動・使用不可。4.1 で位置合わせも1コマ送りに
 // 入力セットは URL で選ぶ。既定は relcheck（これまでの URL の挙動を変えない）。
 const SET_PARAM = (new URLSearchParams(location.search).get('set') || 'relcheck');
 const TASK_FILE = SET_PARAM === 'relcheck' ? 'data/tasks.json' : ('data/tasks_' + SET_PARAM + '.json');
