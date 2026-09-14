@@ -8,7 +8,10 @@
    ・保存形式はスマホとタブレットで同じ。途中で端末を変えても続けられる。 */
 
 const $ = s => document.querySelector(s);
-const APP_VER = '2';   // 保存バグ修正版
+const APP_VER = '3';   // ?set= で入力セットを切り替える版
+// 入力セットは URL で選ぶ。既定は relcheck（これまでの URL の挙動を変えない）。
+const SET_PARAM = (new URLSearchParams(location.search).get('set') || 'relcheck');
+const TASK_FILE = SET_PARAM === 'relcheck' ? 'data/tasks.json' : ('data/tasks_' + SET_PARAM + '.json');
 const LS = {cfg: 'relui.cfg', who: 'relui.who', mode: 'relui.mode',
             rel: 'relui.rel', pos: 'relui.pos', q: 'relui.queue'};
 const TEST_VIDS = ['184258', '184307', '184442', '184917', '184956', '185159', '185349', '185402',
@@ -496,7 +499,18 @@ $('#menu').onclick = () => { $('#mstat').textContent = stat(); $('#menuDlg').sho
 
 // ---------- 起動 ----------
 async function boot() {
-  D = await (await fetch('data/tasks.json')).json();
+  const resp = await fetch(TASK_FILE + '?v=' + APP_VER);
+  if (!resp.ok) {
+    document.body.innerHTML = '<p style="padding:20px;color:#e8735a">入力セット ' + SET_PARAM
+      + ' の素材が見つからない（' + TASK_FILE + '）</p>';
+    throw new Error('no task file');
+  }
+  D = await resp.json();
+  if (D.set !== SET_PARAM) {
+    document.body.innerHTML = '<p style="padding:20px;color:#e8735a">素材の set 名 ' + D.set
+      + ' が URL の ' + SET_PARAM + ' と一致しない</p>';
+    throw new Error('set mismatch');
+  }
   const leak = D.tasks.map(t => t.vid).filter(v => TEST_VIDS.indexOf(v) >= 0);
   if (leak.length) {
     document.body.innerHTML = '<p style="padding:20px;color:#e8735a">消費済み test が混ざっている: '
