@@ -145,12 +145,13 @@
 
  <!-- ① 位置合わせ -->
  <div class="row" id="locrow" style="display:none">
-  <button id="exbtn1">使用不可</button>
+  <button id="locback" style="display:none">リリース選択に戻る</button>
   <button id="locgo" disabled>手をタップしてから確定</button>
  </div>
  <!-- ② リリース選択 -->
  <div class="row" id="relrow" style="display:none">
   <button id="exbtn2">使用不可</button>
+  <button id="relocbtn" style="display:none">位置合わせをやり直す</button>
   <button id="relgo">このコマで確定</button>
  </div>
  <!-- ①② 共通の前後移動 -->
@@ -191,7 +192,7 @@
 
 <dialog id="exDlg">
  <h3>この投球を使用不可にする</h3>
- <p>映像全体を見ても正しいリリースのコマを決められないときに使います。理由を選んでください。</p>
+ <p>原寸の画像を前後に送って見ても、手や体に隠れて、どこで離れたか数コマ以上判断できないときに使います。理由を選んでください。</p>
  <label>理由</label>
  <select id="exReason"></select>
  <label>メモ（「その他」のときは必須）</label>
@@ -213,6 +214,6 @@
  <button id="mClose">閉じる</button>
 </dialog>
 
-<script src="config.js?v=4.2"></script>
-<script src="app.js?v=4.2"></script>
+<script src="config.js?v=4.3"></script>
+<script src="app.js?v=4.3"></script>
 </html>

@@ -17,7 +17,7 @@
    ・保存形式はスマホとタブレットで同じ。途中で端末を変えても続けられる。 */
 
 const $ = s => document.querySelector(s);
-const APP_VER = '4.2';   // 位置合わせ・自由な前後移動・使用不可。4.1 で位置合わせも1コマ送りに
+const APP_VER = '4.3';   // 位置合わせ・自由な前後移動・使用不可。4.1 で位置合わせも1コマ送りに
 // 入力セットは URL で選ぶ。既定は relcheck（これまでの URL の挙動を変えない）。
 const SET_PARAM = (new URLSearchParams(location.search).get('set') || 'relcheck');
 const TASK_FILE = SET_PARAM === 'relcheck' ? 'data/tasks.json' : ('data/tasks_' + SET_PARAM + '.json');
@@ -31,9 +31,11 @@ const REASONS = [['release_not_visible', 'リリースの瞬間が映像内に�
                  ['video_cut_before_release', 'リリースより前で動画が切れている'],
                  ['severe_occlusion', '強い遮蔽で判断できない'],
                  ['other', 'その他']];
-const RULE_LOC = '動画全体から<b>リリース付近のコマ</b>を探し、<b>投げる手</b>をタップして確定。ここは大まかでよい。'
-               + 'リリース＝手からキャップが離れた瞬間のコマ。映像で確認できない投球は「使用不可」';
-const RULE_REL = 'リリース＝<b>手からキャップが離れた瞬間のコマ</b>を選ぶ';
+// 位置合わせ画面は縮小画像なので、リリースの瞬間も使用不可も決めない（2026-09-14 利用者の指示）。
+const RULE_LOC = 'ここでは<b>リリースの瞬間を決めません</b>。<b>投げている手</b>と<b>投球時刻</b>を大まかに指定してください'
+               + '（手をタップして確定）。最終的なリリース判定は次の原寸画面で行います。';
+const RULE_REL = 'リリース＝<b>手からキャップが離れた瞬間のコマ</b>を選ぶ。'
+               + '原寸でも手や体に隠れて、どこで離れたか数コマ以上判断できない投球は「使用不可」';
 const RULE_POS = '蓋の<b>中心</b>を打つ。ブラーで細長いときは<b>長軸も含めた幾何学的な中央</b>。'
                + '先端や後端は打たない。一部隠れは全体の中心が推定できるときだけ。完全に隠れは位置を打たない';
 
@@ -62,6 +64,18 @@ const win = () => {
 };
 const posKey = (v, f) => v + '#' + f;
 const reasonLabel = code => (REASONS.find(x => x[0] === code) || [code, code || '-'])[1];
+// 位置合わせをやり直した後、まだ原寸の画像が新しい位置で作られていない
+function cropStale(t) {
+  const r = REL[t.video_id] || {};
+  if (t.source !== 'located' || !t.locate || statusOf(t.video_id) !== 'located') return false;
+  return !(t.locate[0] === r.locate_frame && Math.abs(t.locate[1] - r.locate_x) < 0.06
+           && Math.abs(t.locate[2] - r.locate_y) < 0.06);
+}
+function lfiNear(t, f) {
+  let best = 0, bd = 1e9;
+  (t.lframes || []).forEach((x, i) => { const d = Math.abs(x.f - f); if (d < bd) { bd = d; best = i; } });
+  return best;
+}
 
 function api(path, opt) {
   return fetch(cfg.url.replace(/\/+$/, '') + '/rest/v1/' + path, Object.assign({}, opt, {
@@ -433,6 +447,7 @@ function render() {
     const lf = t.lframes[lfi];
     $('#info').textContent = 'コマ ' + lf.f + '（動画は全 ' + t.total + ' コマ）';
     setNav(lfi, t.lframes.length, lf.f, t.lframes[0].f, t.lframes[t.lframes.length - 1].f, D.loc_step || 4);
+    showRow('#locback', stageOf(t) === 'select' && !cropStale(t));
     $('#locgo').disabled = !locPt;
     $('#locgo').textContent = locPt ? ('コマ ' + locPt.f + ' の手の位置で確定') : '手をタップしてから確定';
     drawLoc();
@@ -443,6 +458,7 @@ function render() {
     $('#info').textContent = 'コマ ' + cur.f + '（用意したコマ ' + fs[0].f + '〜' + fs[fs.length - 1].f + '）';
     setNav(rci, fs.length, cur.f, fs[0].f, fs[fs.length - 1].f, 1);
     $('#relgo').textContent = 'コマ ' + cur.f + ' をリリースとして確定';
+    showRow('#relocbtn', !!(t.lframes && t.lframes.length));
   } else if (phase === 'pos') {
     $('#grid').style.display = 'none';
     $('#mainwrap').style.display = ''; $('#zoomwrap').style.display = '';
@@ -501,6 +517,7 @@ function render() {
     let label, cls;
     if (s === 'excluded') { label = ' 除外'; cls = ' excl'; }
     else if (stageOf(x) === 'locate') { label = s === 'located' ? ' 準備中' : ' 探す'; cls = s === 'located' ? ' wait' : ''; }
+    else if (cropStale(x)) { label = ' 準備中'; cls = ' wait'; }
     else {
       const n = countDone(x), r = relOf(x.video_id);
       label = r === null ? ' 未' : (' ' + n + '/' + full);
@@ -522,6 +539,8 @@ function startVideo() {
   } else if (stageOf(t) === 'locate') {
     phase = s === 'located' ? 'wait' : 'loc';
     lfi = 0;
+  } else if (cropStale(t)) {
+    phase = 'wait';
   } else if (relOf(v) === null) {
     phase = 'rel';
     rci = 0;
@@ -567,7 +586,7 @@ $('#relgo').onclick = () => {
     if (!have.has(f + i)) {
       alert('コマ ' + f + ' をリリースにすると、前後14コマ（' + (f - D.pre) + '〜' + (f + D.post)
             + '）の画像が足りません。用意したコマは ' + fs[0].f + '〜' + fs[fs.length - 1].f
-            + ' です。位置合わせをやり直してください。');
+            + ' です。「位置合わせをやり直す」で投球時刻を指定し直してください。');
       return;
     }
   }
@@ -578,8 +597,15 @@ function openExclude() {
   $('#exReason').value = 'release_not_visible'; $('#exNote').value = '';
   $('#exDlg').showModal();
 }
-$('#exbtn1').onclick = openExclude;
+// 使用不可はリリース選択画面（原寸）からだけ。位置合わせ画面には置かない。
 $('#exbtn2').onclick = openExclude;
+function toLocate() {
+  const t = task(), r = REL[t.video_id] || {};
+  const f = r.locate_frame != null ? r.locate_frame : (t.frames && t.frames[rci] ? t.frames[rci].f : 0);
+  lfi = lfiNear(t, f); locPt = null; phase = 'loc'; render();
+}
+$('#relocbtn').onclick = toLocate;
+$('#locback').onclick = () => { locPt = null; phase = 'rel'; render(); };
 $('#exOk').onclick = () => {
   const r = $('#exReason').value, n = $('#exNote').value.trim();
   if (r === 'other' && !n) { alert('「その他」のときは理由を書いてください'); return; }
@@ -594,7 +620,7 @@ $('#undoex').onclick = () => {
   phase = stageOf(t) === 'locate' ? 'loc' : 'rel';
   render();
 };
-$('#relocate').onclick = () => { phase = 'loc'; lfi = 0; locPt = null; render(); };
+$('#relocate').onclick = toLocate;
 
 $('#maintag').onclick = () => {
   if (phase === 'rel') { relZoom = relZoom >= 4 ? 1 : relZoom * 2; render(); }
@@ -781,6 +807,7 @@ async function start() {
     const v = t.video_id, s = statusOf(v);
     if (s === 'excluded') return false;
     if (stageOf(t) === 'locate') return s !== 'located';
+    if (cropStale(t)) return false;
     const r = relOf(v);
     if (r === null) return true;
     for (let i = -D.pre; i <= D.post; i++)
