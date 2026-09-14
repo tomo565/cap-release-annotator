@@ -17,7 +17,7 @@
    ・保存形式はスマホとタブレットで同じ。途中で端末を変えても続けられる。 */
 
 const $ = s => document.querySelector(s);
-const APP_VER = '4.3';   // 位置合わせ・自由な前後移動・使用不可。4.1 で位置合わせも1コマ送りに
+const APP_VER = '4.4';   // 位置合わせ・自由な前後移動・使用不可。4.1 で位置合わせも1コマ送りに
 // 入力セットは URL で選ぶ。既定は relcheck（これまでの URL の挙動を変えない）。
 const SET_PARAM = (new URLSearchParams(location.search).get('set') || 'relcheck');
 const TASK_FILE = SET_PARAM === 'relcheck' ? 'data/tasks.json' : ('data/tasks_' + SET_PARAM + '.json');
@@ -71,6 +71,14 @@ function cropStale(t) {
   return !(t.locate[0] === r.locate_frame && Math.abs(t.locate[1] - r.locate_x) < 0.06
            && Math.abs(t.locate[2] - r.locate_y) < 0.06);
 }
+// 取り消した位置合わせ（tasks.json の invalid_locate と同じ座標のまま）なら、打ち直しが必要
+function locInvalid(t) {
+  // 状態は問わない（取り消した座標のまま release まで確定されていた場合も打ち直しが必要）
+  const r = REL[t.video_id] || {}, k = t.invalid_locate;
+  if (!k || r.locate_frame == null) return false;
+  return k[0] === r.locate_frame && Math.abs(k[1] - r.locate_x) < 0.06 && Math.abs(k[2] - r.locate_y) < 0.06;
+}
+const locDone = t => statusOf(t.video_id) === 'located' && !locInvalid(t);
 function lfiNear(t, f) {
   let best = 0, bd = 1e9;
   (t.lframes || []).forEach((x, i) => { const d = Math.abs(x.f - f); if (d < bd) { bd = d; best = i; } });
@@ -440,6 +448,7 @@ function render() {
   showRow('#locrow', phase === 'loc'); showRow('#relrow', phase === 'rel');
   showRow('#navrow', phase === 'loc' || phase === 'rel'); showRow('#jumprow', phase === 'loc' || phase === 'rel');
   showRow('#msgrow', phase === 'wait' || phase === 'excl');
+  showRow('#msglinerow', phase === 'loc');
 
   if (phase === 'loc') {
     $('#grid').style.display = 'none'; $('#zoomwrap').style.display = 'none'; $('#left').style.display = 'none';
@@ -448,6 +457,9 @@ function render() {
     $('#info').textContent = 'コマ ' + lf.f + '（動画は全 ' + t.total + ' コマ）';
     setNav(lfi, t.lframes.length, lf.f, t.lframes[0].f, t.lframes[t.lframes.length - 1].f, D.loc_step || 4);
     showRow('#locback', stageOf(t) === 'select' && !cropStale(t));
+    $('#locredo').disabled = !locPt;
+    if (locInvalid(t)) $('#msgline').textContent = '前の位置合わせは取り消しました。投げている手を打ち直してください。';
+    else $('#msgline').textContent = '';
     $('#locgo').disabled = !locPt;
     $('#locgo').textContent = locPt ? ('コマ ' + locPt.f + ' の手の位置で確定') : '手をタップしてから確定';
     drawLoc();
@@ -516,7 +528,7 @@ function render() {
     const s = statusOf(x.video_id), d = document.createElement('div');
     let label, cls;
     if (s === 'excluded') { label = ' 除外'; cls = ' excl'; }
-    else if (stageOf(x) === 'locate') { label = s === 'located' ? ' 準備中' : ' 探す'; cls = s === 'located' ? ' wait' : ''; }
+    else if (stageOf(x) === 'locate') { label = locDone(x) ? ' 準備中' : ' 探す'; cls = locDone(x) ? ' wait' : ''; }
     else if (cropStale(x)) { label = ' 準備中'; cls = ' wait'; }
     else {
       const n = countDone(x), r = relOf(x.video_id);
@@ -537,8 +549,9 @@ function startVideo() {
   if (s === 'excluded') {
     phase = 'excl';
   } else if (stageOf(t) === 'locate') {
-    phase = s === 'located' ? 'wait' : 'loc';
-    lfi = 0;
+    phase = locDone(t) ? 'wait' : 'loc';
+    const r = REL[v] || {};
+    lfi = r.locate_frame != null ? lfiNear(t, r.locate_frame) : 0;   // 取り消した場合も時刻の近くから
   } else if (cropStale(t)) {
     phase = 'wait';
   } else if (relOf(v) === null) {
@@ -576,6 +589,9 @@ $('#fnum').addEventListener('keydown', e => { if (e.key === 'Enter') { $('#fgo')
 
 $('#locgo').onclick = () => {
   if (!locPt) return;
+  const rel = relOf(task().video_id);
+  if (rel !== null && !confirm('この投球にはリリース確定（コマ ' + rel + '）があります。位置合わせをやり直すと、'
+      + 'このリリース確定は取り消され、新しい原寸画像で選び直しになります。続けますか？')) return;
   saveLocate(locPt);
   phase = 'wait'; render();
 };
@@ -605,6 +621,8 @@ function toLocate() {
   lfi = lfiNear(t, f); locPt = null; phase = 'loc'; render();
 }
 $('#relocbtn').onclick = toLocate;
+// 位置合わせ画面の「やり直す」: 打った手の位置を消して打ち直す（まだ確定していないタップ）
+$('#locredo').onclick = () => { locPt = null; render(); };
 $('#locback').onclick = () => { locPt = null; phase = 'rel'; render(); };
 $('#exOk').onclick = () => {
   const r = $('#exReason').value, n = $('#exNote').value.trim();
@@ -806,7 +824,7 @@ async function start() {
   const k = D.tasks.findIndex(t => {
     const v = t.video_id, s = statusOf(v);
     if (s === 'excluded') return false;
-    if (stageOf(t) === 'locate') return s !== 'located';
+    if (stageOf(t) === 'locate') return !locDone(t);
     if (cropStale(t)) return false;
     const r = relOf(v);
     if (r === null) return true;
