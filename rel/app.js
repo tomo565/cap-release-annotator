@@ -1,14 +1,23 @@
 'use strict';
-/* リリース選択 → リリース-3〜+10 の14コマに蓋の中心を打つ。
+/* リリース教示の画面。投球ごとに次の順で進む。
+
+   ① 位置合わせ（stage = locate の投球だけ）
+      動画全体を縮小した全画面で見て、リリース付近のコマと投げる手の位置を打つ。
+      自動探索に頼らない。前後へ自由に動ける。
+   ② リリースを選ぶ
+      原寸の切り出しで「手からキャップが離れた瞬間のコマ」を選ぶ。前後へ自由に動ける。
+   ③ 蓋の中心を打つ（リリース-3〜+10 の14コマ）
+
+   どの段階でも「使用不可」にできる。理由を必ず残す。
 
    守っていること:
    ・自動推定のリリースも、既存のリリース値も、画面に一切出さない。
-   ・表示範囲の中心はリリースからずらしてあり、真ん中＝リリースにならない。
-   ・表示範囲は前後へ広げられる。24コマの中から必ず選ぶ作りにしない。
+   ・リリースのコマは原寸の切り出しで選ぶ（relcheck と同じ条件）。縮小画像では選ばない。
+   ・送る列は決め打ち。読み込んだ行の id などは送らない。
    ・保存形式はスマホとタブレットで同じ。途中で端末を変えても続けられる。 */
 
 const $ = s => document.querySelector(s);
-const APP_VER = '3';   // ?set= で入力セットを切り替える版
+const APP_VER = '4';   // 位置合わせ・自由な前後移動・使用不可 に対応した版
 // 入力セットは URL で選ぶ。既定は relcheck（これまでの URL の挙動を変えない）。
 const SET_PARAM = (new URLSearchParams(location.search).get('set') || 'relcheck');
 const TASK_FILE = SET_PARAM === 'relcheck' ? 'data/tasks.json' : ('data/tasks_' + SET_PARAM + '.json');
@@ -18,11 +27,17 @@ const TEST_VIDS = ['184258', '184307', '184442', '184917', '184956', '185159', '
                    '154622', '154629', '154640', '154649', '154711', '154804', '154815', '154849',
                    '160931', '161044', '161103'];
 const VIS = ['見える', '一部隠れ', '完全に隠れ'];
+const REASONS = [['release_not_visible', 'リリースの瞬間が映像内に見えない'],
+                 ['video_cut_before_release', 'リリースより前で動画が切れている'],
+                 ['severe_occlusion', '強い遮蔽で判断できない'],
+                 ['other', 'その他']];
+const RULE_LOC = '動画全体から<b>リリース付近のコマ</b>を探し、<b>投げる手</b>をタップして確定。ここは大まかでよい。'
+               + 'リリース＝手からキャップが離れた瞬間のコマ。映像で確認できない投球は「使用不可」';
 const RULE_REL = 'リリース＝<b>手からキャップが離れた瞬間のコマ</b>を選ぶ';
 const RULE_POS = '蓋の<b>中心</b>を打つ。ブラーで細長いときは<b>長軸も含めた幾何学的な中央</b>。'
                + '先端や後端は打たない。一部隠れは全体の中心が推定できるときだけ。完全に隠れは位置を打たない';
 
-let D = null, vi = 0, fi = 0, phase = 'rel', page = 0, pick = null,
+let D = null, vi = 0, fi = 0, phase = 'rel', rci = 0, lfi = 0, locPt = null,
     cfg = null, who = '', mode = 'mobile', expanded = false, t0 = 0,
     REL = {}, POS = {}, imgs = new Map(), zoomDrag = null,
     relZoom = 1, relOnly = false;   // relZoom 1/2/4 倍、relOnly はスマホで1コマだけ大きく見る
@@ -33,12 +48,20 @@ const st = {
 };
 const task = () => D.tasks[vi];
 const SET = () => D.set;
-const relOf = v => REL[v] ? REL[v].release_frame_human : null;
+const stageOf = t => t.stage || 'select';
+function statusOf(v) {
+  const r = REL[v];
+  if (!r) return null;
+  if (r.status) return r.status;
+  return r.release_frame_human != null ? 'confirmed' : null;
+}
+const relOf = v => (REL[v] && statusOf(v) === 'confirmed') ? REL[v].release_frame_human : null;
 const win = () => {
   const r = relOf(task().video_id);
   return r === null ? [] : Array.from({length: D.pre + D.post + 1}, (_, i) => r - D.pre + i);
 };
 const posKey = (v, f) => v + '#' + f;
+const reasonLabel = code => (REASONS.find(x => x[0] === code) || [code, code || '-'])[1];
 
 function api(path, opt) {
   return fetch(cfg.url.replace(/\/+$/, '') + '/rest/v1/' + path, Object.assign({}, opt, {
@@ -91,22 +114,29 @@ async function flush() {
 }
 // 送る列を決め打ちにする。読み込んだ行の id や created_at を送ると、Supabase が送信全体を拒否する。
 // 全行が同じ列を持たないと一括送信も拒否されるので、無い列には既定値を入れる。
+// 状態ごとの約束（確定ならリリースのコマあり、除外なら理由あり・コマなし）は表の側でも拒否する。
+const nz = v => (v === undefined ? null : v);
 function relRow(r) {
+  const status = r.status || 'confirmed';
   return {video_id: r.video_id, set_name: r.set_name,
-          release_frame_human: r.release_frame_human,
-          release_confirmed_by_human: r.release_confirmed_by_human === true,
+          release_frame_human: status === 'confirmed' ? nz(r.release_frame_human) : null,
+          release_confirmed_by_human: status === 'confirmed' && r.release_confirmed_by_human === true,
           expanded: r.expanded === true,
-          seconds_spent: (r.seconds_spent === undefined ? null : r.seconds_spent),
-          ui_mode: r.ui_mode || null, annotator: r.annotator || null};
+          seconds_spent: nz(r.seconds_spent),
+          ui_mode: r.ui_mode || null, annotator: r.annotator || null,
+          status: status,
+          exclusion_reason: status === 'excluded' ? (r.exclusion_reason || 'other') : null,
+          exclusion_note: status === 'excluded' ? (r.exclusion_note || null) : null,
+          locate_frame: nz(r.locate_frame), locate_x: nz(r.locate_x), locate_y: nz(r.locate_y)};
 }
 function posRow(r) {
   const occ = r.visibility === '完全に隠れ';
   return {video_id: r.video_id, set_name: r.set_name, frame_index: r.frame_index,
           release_offset: r.release_offset,
-          x: occ ? null : (r.x === undefined ? null : r.x),
-          y: occ ? null : (r.y === undefined ? null : r.y),
-          bbox_w: (r.bbox_w === undefined ? null : r.bbox_w),
-          bbox_h: (r.bbox_h === undefined ? null : r.bbox_h),
+          x: occ ? null : nz(r.x),
+          y: occ ? null : nz(r.y),
+          bbox_w: nz(r.bbox_w),
+          bbox_h: nz(r.bbox_h),
           visibility: r.visibility || '見える',
           confirmed_by_human: r.confirmed_by_human === true,
           annotator: r.annotator || null};
@@ -146,22 +176,58 @@ function img(name, dir) {
   const k = dir + name;
   if (imgs.has(k)) return imgs.get(k);
   const im = new Image(); im.src = dir + '/' + name; imgs.set(k, im);
-  im.onload = () => { if (phase === 'pos') draw(); };
+  im.onload = () => draw();
   return im;
 }
 const frameRec = f => task().frames.find(x => x.f === f);
+function fitCanvas(c, natW, natH) {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  c.width = Math.round(c.clientWidth * dpr); c.height = Math.round(c.clientHeight * dpr);
+  const s = Math.min(c.width / natW, c.height / natH);
+  return {s, ox: (c.width - natW * s) / 2, oy: (c.height - natH * s) / 2, dpr};
+}
+function draw() {
+  if (phase === 'pos') drawMain();
+  else if (phase === 'rel') drawRelBig();
+  else if (phase === 'loc') drawLoc();
+}
 
-// ---------- リリース選択 ----------
+// ---------- ① 位置合わせ ----------
+function drawLoc() {
+  const t = task(), c = $('#main'), g = c.getContext('2d');
+  // 画面の向きは群で違う（石黒群は横）。投球ごとの大きさを使う。
+  const sc = D.loc_scale || 4, lw = (t.W || D.W) / sc, lh = (t.H || D.H) / sc;
+  const v = fitCanvas(c, lw, lh);
+  g.imageSmoothingEnabled = true;
+  g.fillStyle = '#000'; g.fillRect(0, 0, c.width, c.height);
+  const lf = t.lframes[lfi];
+  const im = img(lf.img, 'loc');
+  if (im.complete && im.naturalWidth) g.drawImage(im, v.ox, v.oy, lw * v.s, lh * v.s);
+  c._v = v; c._sc = sc;
+  for (const d of [-2, -1, 1, 2]) {             // 前後を先に読んでおく
+    const x = t.lframes[lfi + d]; if (x) img(x.img, 'loc');
+  }
+  if (locPt && locPt.f === lf.f) {
+    const x = v.ox + (locPt.x / sc) * v.s, y = v.oy + (locPt.y / sc) * v.s, L = 22 * v.dpr, G = 6 * v.dpr;
+    g.strokeStyle = '#34a853'; g.lineWidth = 3 * v.dpr;
+    g.beginPath();
+    g.moveTo(x - L, y); g.lineTo(x - G, y); g.moveTo(x + G, y); g.lineTo(x + L, y);
+    g.moveTo(x, y - L); g.lineTo(x, y - G); g.moveTo(x, y + G); g.lineTo(x, y + L);
+    g.stroke();
+  }
+  $('#maintag').textContent = 'コマ ' + lf.f + '（縮小表示・' + (D.loc_step || 4) + 'コマおき）';
+}
+
+// ---------- ② リリース選択 ----------
 function relPageFrames() {
-  const fs = task().frames;
-  const per = D.page;
-  const st0 = Math.max(0, Math.min(fs.length - per, page * 12));
-  return fs.slice(st0, st0 + per);
+  const fs = task().frames, per = D.page || 24;
+  const s0 = Math.max(0, Math.min(fs.length - per, rci - Math.floor(per / 2) + 1));
+  return fs.slice(s0, s0 + per);
 }
 function drawRelBig() {
-  // 選んだコマを大きく出す。答えの印は一切描かない。コマ番号だけ。
+  // 見ているコマを大きく出す。答えの印は一切描かない。コマ番号だけ。
   const c = $('#main'), g = c.getContext('2d');
-  const fr = pick === null ? relPageFrames()[0] : frameRec(pick);
+  const fs = task().frames, fr = fs[Math.max(0, Math.min(fs.length - 1, rci))];
   const v = fitCanvas(c, D.crop / relZoom, D.crop / relZoom);
   g.imageSmoothingEnabled = false;
   g.fillStyle = '#000'; g.fillRect(0, 0, c.width, c.height);
@@ -172,7 +238,6 @@ function drawRelBig() {
     g.drawImage(im, o, o, k, k, v.ox, v.oy, k * v.s, k * v.s);
   $('#maintag').textContent = 'コマ ' + fr.f + '　' + relZoom + '倍（押すと拡大）';
 }
-
 function drawRelGrid() {
   const g = $('#grid');
   g.style.display = (mode === 'mobile' && relOnly) ? 'none' : '';
@@ -180,26 +245,53 @@ function drawRelGrid() {
   $('#zoomwrap').style.display = 'none';
   $('#left').style.display = 'none';
   g.innerHTML = '';
+  const cur = task().frames[rci];
   for (const fr of relPageFrames()) {
     const d = document.createElement('div');
-    d.className = 'cell' + (pick === fr.f ? ' sel' : '');
+    d.className = 'cell' + (cur && cur.f === fr.f ? ' sel' : '');
     const im = document.createElement('img');
     im.src = 'img/' + fr.img; im.loading = 'lazy';
     const s = document.createElement('span'); s.textContent = fr.f;   // コマ番号だけ
     d.append(im, s);
-    d.onclick = () => { pick = fr.f; render(); };
+    d.onclick = () => { rci = task().frames.findIndex(x => x.f === fr.f); render(); };
     g.append(d);
   }
   drawRelBig();
 }
 
-// ---------- 位置入力 ----------
-function fitCanvas(c, natW, natH) {
-  const dpr = Math.min(devicePixelRatio || 1, 2);
-  c.width = Math.round(c.clientWidth * dpr); c.height = Math.round(c.clientHeight * dpr);
-  const s = Math.min(c.width / natW, c.height / natH);
-  return {s, ox: (c.width - natW * s) / 2, oy: (c.height - natH * s) / 2, dpr};
+// ---------- 前後移動（①②共通） ----------
+function nav(delta) {            // delta は元動画のコマ数
+  if (phase === 'loc') {
+    const t = task(), step = D.loc_step || 4, n = t.lframes.length;
+    const k = Math.sign(delta) * Math.max(1, Math.round(Math.abs(delta) / step));
+    lfi = Math.max(0, Math.min(n - 1, lfi + k));
+  } else if (phase === 'rel') {
+    const n = task().frames.length;
+    rci = Math.max(0, Math.min(n - 1, rci + delta));
+    expanded = true;
+  }
+  render();
 }
+function jumpTo(frame) {
+  const list = phase === 'loc' ? task().lframes : (phase === 'rel' ? task().frames : null);
+  if (!list) return;
+  let best = 0, bd = 1e9;
+  list.forEach((x, i) => { const d = Math.abs(x.f - frame); if (d < bd) { bd = d; best = i; } });
+  if (phase === 'loc') lfi = best; else { rci = best; expanded = true; }
+  render();
+}
+function setNav(idx, n, f, fmin, fmax, step) {
+  const s = $('#slider');
+  s.max = String(Math.max(0, n - 1)); s.value = String(idx);
+  $('#curf').textContent = 'コマ ' + f + '（' + fmin + '〜' + fmax + '）';
+  $('#fnum').min = String(fmin); $('#fnum').max = String(fmax);
+  document.querySelectorAll('#navrow button[data-d]').forEach(b => {
+    const d = +b.dataset.d, k = Math.abs(d) === 1 ? step : Math.abs(d);
+    b.textContent = d < 0 ? ('◀ ' + k) : (k + ' ▶');
+  });
+}
+
+// ---------- ③ 位置入力 ----------
 const curFrame = () => win()[fi];
 const curRec = () => frameRec(curFrame());
 const curPos = () => POS[posKey(task().video_id, curFrame())] || null;
@@ -247,8 +339,6 @@ function drawZoom() {
   }
   c._Z = Z * dpr;
 }
-function draw() { if (phase === 'pos') drawMain(); }
-
 function drawLeft() {
   const L = $('#left');
   if (mode !== 'tablet' || phase !== 'pos') { L.style.display = 'none'; return; }
@@ -268,13 +358,34 @@ function drawLeft() {
 }
 
 // ---------- 保存の中身 ----------
-function saveRel(frame, confirmed) {
-  const v = task().video_id, now = new Date().toISOString();
-  const row = {video_id: v, set_name: SET(), release_frame_human: frame,
-               release_confirmed_by_human: confirmed, expanded: expanded,
-               seconds_spent: Math.round((Date.now() - t0) / 1000), ui_mode: mode,
-               annotator: who, updated_at: now, __key: v + '|' + SET()};
-  REL[v] = row; st.set(LS.rel, REL); queuePush('rel', row);
+function carryLocate(v) {
+  const r = REL[v] || {};
+  return {locate_frame: nz(r.locate_frame), locate_x: nz(r.locate_x), locate_y: nz(r.locate_y)};
+}
+function baseRel(v) {
+  return {video_id: v, set_name: SET(), expanded: expanded,
+          seconds_spent: Math.round((Date.now() - t0) / 1000), ui_mode: mode,
+          annotator: who, updated_at: new Date().toISOString(), __key: v + '|' + SET()};
+}
+function putRel(row) { REL[row.video_id] = row; st.set(LS.rel, REL); queuePush('rel', row); }
+function saveRel(frame) {
+  const v = task().video_id;
+  putRel(Object.assign(baseRel(v), carryLocate(v),
+    {release_frame_human: frame, release_confirmed_by_human: true, status: 'confirmed',
+     exclusion_reason: null, exclusion_note: null}));
+}
+function saveLocate(p) {
+  const v = task().video_id;
+  putRel(Object.assign(baseRel(v),
+    {release_frame_human: null, release_confirmed_by_human: false, status: 'located',
+     exclusion_reason: null, exclusion_note: null,
+     locate_frame: p.f, locate_x: +p.x.toFixed(1), locate_y: +p.y.toFixed(1)}));
+}
+function saveExclude(reason, note) {
+  const v = task().video_id;
+  putRel(Object.assign(baseRel(v), carryLocate(v),
+    {release_frame_human: null, release_confirmed_by_human: false, status: 'excluded',
+     exclusion_reason: reason, exclusion_note: note || null}));
 }
 function savePos(o) {
   const v = task().video_id, f = curFrame(), now = new Date().toISOString();
@@ -293,29 +404,46 @@ function savePos(o) {
 }
 
 // ---------- 表示 ----------
+const PHASE_LABEL = {loc: '① 投球を探して手の位置を打つ', wait: '位置合わせ済み（原寸の画像を準備中）',
+                     excl: '使用不可（除外済み）', rel: '② リリースのコマを選ぶ', pos: '③ 蓋の中心を打つ'};
+function showRow(id, on) { $(id).style.display = on ? '' : 'none'; }
+function countDone(x) {
+  const r = relOf(x.video_id);
+  if (r === null) return 0;
+  let n = 0;
+  for (let i = -D.pre; i <= D.post; i++)
+    if ((POS[posKey(x.video_id, r + i)] || {}).confirmed_by_human) n++;
+  return n;
+}
 function render() {
-  const t = task();
-  $('#vid').textContent = t.video_id;
-  $('#phase').textContent = phase === 'rel' ? '① リリースを選ぶ' : '② 蓋の中心を打つ';
-  $('#rule').innerHTML = phase === 'rel' ? RULE_REL : RULE_POS;
+  const t = task(), v = t.video_id;
+  $('#vid').textContent = v;
+  $('#phase').textContent = PHASE_LABEL[phase];
+  $('#rule').innerHTML = phase === 'loc' ? RULE_LOC : (phase === 'rel' ? RULE_REL : (phase === 'pos' ? RULE_POS : ''));
   document.body.className = mode;
 
-  $('#visrow').style.display = phase === 'pos' ? '' : 'none';
-  $('#actrow').style.display = phase === 'pos' ? '' : 'none';
-  $('#relrow').style.display = phase === 'rel' ? '' : 'none';
+  showRow('#visrow', phase === 'pos'); showRow('#actrow', phase === 'pos');
+  showRow('#locrow', phase === 'loc'); showRow('#relrow', phase === 'rel');
+  showRow('#navrow', phase === 'loc' || phase === 'rel'); showRow('#jumprow', phase === 'loc' || phase === 'rel');
+  showRow('#msgrow', phase === 'wait' || phase === 'excl');
 
-  if (phase === 'rel') {
+  if (phase === 'loc') {
+    $('#grid').style.display = 'none'; $('#zoomwrap').style.display = 'none'; $('#left').style.display = 'none';
+    $('#mainwrap').style.display = '';
+    const lf = t.lframes[lfi];
+    $('#info').textContent = 'コマ ' + lf.f + '（動画は全 ' + t.total + ' コマ）';
+    setNav(lfi, t.lframes.length, lf.f, t.lframes[0].f, t.lframes[t.lframes.length - 1].f, D.loc_step || 4);
+    $('#locgo').disabled = !locPt;
+    $('#locgo').textContent = locPt ? ('コマ ' + locPt.f + ' の手の位置で確定') : '手をタップしてから確定';
+    drawLoc();
+  } else if (phase === 'rel') {
     document.body.classList.add('relphase');
     drawRelGrid();
-    const fs = task().frames;
-    $('#info').textContent = 'コマ ' + relPageFrames()[0].f + '〜'
-      + relPageFrames()[relPageFrames().length - 1].f + '（全 ' + fs.length + ' コマ）';
-    $('#relgo').disabled = pick === null;
-    $('#relgo').textContent = pick === null ? 'コマを選ぶ' : 'コマ ' + pick + ' で確定';
-    $('#back12').disabled = page <= 0;
-    $('#fwd12').disabled = (page + 1) * 12 + D.page > fs.length + 11;
-  } else {
-    document.body.classList.remove('relphase');
+    const fs = t.frames, cur = fs[rci];
+    $('#info').textContent = 'コマ ' + cur.f + '（用意したコマ ' + fs[0].f + '〜' + fs[fs.length - 1].f + '）';
+    setNav(rci, fs.length, cur.f, fs[0].f, fs[fs.length - 1].f, 1);
+    $('#relgo').textContent = 'コマ ' + cur.f + ' をリリースとして確定';
+  } else if (phase === 'pos') {
     $('#grid').style.display = 'none';
     $('#mainwrap').style.display = ''; $('#zoomwrap').style.display = '';
     const off = fi - D.pre;
@@ -326,28 +454,40 @@ function render() {
     document.querySelectorAll('#visrow button').forEach(b =>
       b.classList.toggle('on', !!p && p.visibility === b.dataset.v));
     drawLeft(); drawMain();
+  } else {
+    $('#grid').style.display = 'none'; $('#zoomwrap').style.display = 'none'; $('#left').style.display = 'none';
+    $('#mainwrap').style.display = '';
+    const c = $('#main'), g = c.getContext('2d');
+    fitCanvas(c, 1, 1); g.fillStyle = '#000'; g.fillRect(0, 0, c.width, c.height);
+    $('#maintag').textContent = '';
+    $('#info').textContent = '';
+    const r = REL[v] || {};
+    if (phase === 'wait') {
+      $('#msg').textContent = 'コマ ' + r.locate_frame + ' の手の位置（' + Math.round(r.locate_x) + ', '
+        + Math.round(r.locate_y) + '）を記録しました。この位置を中心に原寸の画像を用意してから、リリースのコマを選びます。';
+    } else {
+      $('#msg').textContent = 'この投球は使用不可として除外済みです。理由: ' + reasonLabel(r.exclusion_reason)
+        + (r.exclusion_note ? '（' + r.exclusion_note + '）' : '');
+    }
+    showRow('#undoex', phase === 'excl');
+    showRow('#relocate', phase === 'wait');
   }
 
   const w = win();
-  const done = w.filter(f => (POS[posKey(t.video_id, f)] || {}).confirmed_by_human).length;
-  const tot = D.tasks.length * (D.pre + D.post + 1);
-  const all = D.tasks.reduce((a, x) => {
-    const r = REL[x.video_id] ? REL[x.video_id].release_frame_human : null;
-    if (r === null) return a;
-    let n = 0;
-    for (let i = -D.pre; i <= D.post; i++)
-      if ((POS[posKey(x.video_id, r + i)] || {}).confirmed_by_human) n++;
-    return a + n;
-  }, 0);
+  const done = w.filter(f => (POS[posKey(v, f)] || {}).confirmed_by_human).length;
+  const active = D.tasks.filter(x => statusOf(x.video_id) !== 'excluded');
+  const full = D.pre + D.post + 1;
+  const tot = active.length * full;
+  const all = active.reduce((a, x) => a + countDone(x), 0);
   $('#total').textContent = w.length ? ('この投球 ' + done + '/' + w.length + '　全体 ' + all + '/' + tot)
                                      : ('全体 ' + all + '/' + tot);
-  $('#bar').style.width = (all / tot * 100) + '%';
+  $('#bar').style.width = (tot ? all / tot * 100 : 0) + '%';
   $('#who2').textContent = who;
 
   const fw = $('#films'); fw.innerHTML = '';
   if (phase === 'pos') w.forEach((f, i) => {
     const d = document.createElement('div');
-    const p = POS[posKey(t.video_id, f)];
+    const p = POS[posKey(v, f)];
     d.className = 'fr' + (i === fi ? ' cur' : '') + (p ? (p.confirmed_by_human ? ' done' : ' draft') : '');
     const off = i - D.pre; d.textContent = (off >= 0 ? '+' : '') + off;
     d.onclick = () => { fi = i; render(); };
@@ -357,14 +497,17 @@ function render() {
 
   const vw = $('#vids'); vw.innerHTML = '';
   D.tasks.forEach((x, i) => {
-    const r = REL[x.video_id] ? REL[x.video_id].release_frame_human : null;
-    let n = 0;
-    if (r !== null) for (let k = -D.pre; k <= D.post; k++)
-      if ((POS[posKey(x.video_id, r + k)] || {}).confirmed_by_human) n++;
-    const d = document.createElement('div');
-    const full = D.pre + D.post + 1;
-    d.className = 'vd' + (i === vi ? ' cur' : '') + (r !== null && n === full ? ' done' : ((r !== null || n) ? ' part' : ''));
-    d.textContent = x.vid + (r === null ? ' 未' : ' ' + n + '/' + full);
+    const s = statusOf(x.video_id), d = document.createElement('div');
+    let label, cls;
+    if (s === 'excluded') { label = ' 除外'; cls = ' excl'; }
+    else if (stageOf(x) === 'locate') { label = s === 'located' ? ' 準備中' : ' 探す'; cls = s === 'located' ? ' wait' : ''; }
+    else {
+      const n = countDone(x), r = relOf(x.video_id);
+      label = r === null ? ' 未' : (' ' + n + '/' + full);
+      cls = r !== null && n === full ? ' done' : ((r !== null || n) ? ' part' : '');
+    }
+    d.className = 'vd' + (i === vi ? ' cur' : '') + cls;
+    d.textContent = x.vid + label;
     d.onclick = () => { vi = i; startVideo(); };
     vw.append(d);
   });
@@ -372,14 +515,26 @@ function render() {
 }
 
 function startVideo() {
-  const v = task().video_id;
-  expanded = false; page = 0; pick = null; t0 = Date.now();
-  task().frames.forEach(f => img(f.img, 'img'));
-  if (relOf(v) === null) { phase = 'rel'; }
-  else {
+  const t = task(), v = t.video_id, s = statusOf(v);
+  expanded = false; t0 = Date.now(); locPt = null; relZoom = 1;
+  if (s === 'excluded') {
+    phase = 'excl';
+  } else if (stageOf(t) === 'locate') {
+    phase = s === 'located' ? 'wait' : 'loc';
+    lfi = 0;
+  } else if (relOf(v) === null) {
+    phase = 'rel';
+    rci = 0;
+    // 人が自分で位置合わせした投球は、その人の打ったコマから見せる（自動探索の値ではない）
+    const r = REL[v] || {};
+    if (t.source === 'located' && r.locate_frame != null) {
+      const i = t.frames.findIndex(x => x.f === r.locate_frame);
+      if (i >= 0) rci = i;
+    }
+  } else {
     phase = 'pos';
     const w = win();
-    let k = w.findIndex(f => !(POS[posKey(v, f)] || {}).confirmed_by_human);
+    const k = w.findIndex(f => !(POS[posKey(v, f)] || {}).confirmed_by_human);
     fi = k < 0 ? 0 : k;
   }
   render();
@@ -390,22 +545,76 @@ function nextVideo() {
 }
 
 // ---------- 操作 ----------
+document.querySelectorAll('#navrow button[data-d]').forEach(b => b.onclick = () => nav(+b.dataset.d));
+$('#slider').addEventListener('input', e => {
+  const i = +e.target.value;
+  if (phase === 'loc') lfi = i;
+  else if (phase === 'rel') { rci = i; expanded = true; }
+  render();
+});
+$('#fgo').onclick = () => { const n = parseInt($('#fnum').value, 10); if (isFinite(n)) jumpTo(n); };
+$('#fnum').addEventListener('keydown', e => { if (e.key === 'Enter') { $('#fgo').click(); e.preventDefault(); } });
+
+$('#locgo').onclick = () => {
+  if (!locPt) return;
+  saveLocate(locPt);
+  phase = 'wait'; render();
+};
 $('#relgo').onclick = () => {
-  if (pick === null) return;
-  saveRel(pick, true);
+  const fs = task().frames, f = fs[rci].f;
+  const have = new Set(fs.map(x => x.f));
+  for (let i = -D.pre; i <= D.post; i++) {
+    if (!have.has(f + i)) {
+      alert('コマ ' + f + ' をリリースにすると、前後14コマ（' + (f - D.pre) + '〜' + (f + D.post)
+            + '）の画像が足りません。用意したコマは ' + fs[0].f + '〜' + fs[fs.length - 1].f
+            + ' です。位置合わせをやり直してください。');
+      return;
+    }
+  }
+  saveRel(f);
   phase = 'pos'; fi = 0; render();
 };
+function openExclude() {
+  $('#exReason').value = 'release_not_visible'; $('#exNote').value = '';
+  $('#exDlg').showModal();
+}
+$('#exbtn1').onclick = openExclude;
+$('#exbtn2').onclick = openExclude;
+$('#exOk').onclick = () => {
+  const r = $('#exReason').value, n = $('#exNote').value.trim();
+  if (r === 'other' && !n) { alert('「その他」のときは理由を書いてください'); return; }
+  saveExclude(r, n);
+  $('#exDlg').close();
+  phase = 'excl'; render();
+};
+$('#exCancel').onclick = () => $('#exDlg').close();
+$('#undoex').onclick = () => {
+  const t = task();
+  locPt = null; lfi = 0; rci = 0;
+  phase = stageOf(t) === 'locate' ? 'loc' : 'rel';
+  render();
+};
+$('#relocate').onclick = () => { phase = 'loc'; lfi = 0; locPt = null; render(); };
+
 $('#maintag').onclick = () => {
   if (phase === 'rel') { relZoom = relZoom >= 4 ? 1 : relZoom * 2; render(); }
 };
 $('#mBig') && ($('#mBig').onclick = () => { relOnly = !relOnly; $('#menuDlg').close(); render(); });
-$('#back12').onclick = () => { page = Math.max(0, page - 1); expanded = true; render(); };
-$('#fwd12').onclick = () => { page = page + 1; expanded = true; render(); };
 
 $('#main').addEventListener('pointerdown', e => {
-  if (phase !== 'pos') return;
-  const c = $('#main'), v = c._v, rect = c.getBoundingClientRect();
+  const c = $('#main'), v = c._v;
+  if (!v) return;
+  const rect = c.getBoundingClientRect();
   const px = (e.clientX - rect.left) * v.dpr, py = (e.clientY - rect.top) * v.dpr;
+  if (phase === 'loc') {
+    const t = task(), sc = c._sc || 4, lw = (t.W || D.W) / sc, lh = (t.H || D.H) / sc;
+    const ix = (px - v.ox) / v.s, iy = (py - v.oy) / v.s;
+    if (!isFinite(ix) || !isFinite(iy) || ix < 0 || iy < 0 || ix > lw || iy > lh) return;
+    locPt = {f: task().lframes[lfi].f, x: ix * sc, y: iy * sc};
+    render();
+    return;
+  }
+  if (phase !== 'pos') return;
   const ix = (px - v.ox) / v.s, iy = (py - v.oy) / v.s;
   if (!isFinite(ix) || !isFinite(iy) || ix < 0 || iy < 0 || ix > D.crop || iy > D.crop) return;
   const f = toFull({x: ix, y: iy});
@@ -450,7 +659,8 @@ $('#undo').onclick = () => {
 };
 
 addEventListener('keydown', e => {
-  if (e.target.tagName === 'INPUT') return;
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+  if ($('#exDlg').open || $('#menuDlg').open) return;
   const k = e.key;
   if (phase === 'pos') {
     if (k === 'ArrowRight') { $('#skip').click(); e.preventDefault(); }
@@ -460,12 +670,16 @@ addEventListener('keydown', e => {
     else if (k === 'p' || k === 'P') setVis('一部隠れ');
     else if (k === 'o' || k === 'O') setVis('完全に隠れ');
     else if (k === 'z' || k === 'Z') $('#undo').click();
-  } else {
-    const fs = relPageFrames();
-    if (k === 'ArrowRight') { const i = fs.findIndex(x => x.f === pick); pick = fs[Math.min(fs.length - 1, Math.max(0, i) + 1)].f; render(); e.preventDefault(); }
-    else if (k === 'ArrowLeft') { const i = fs.findIndex(x => x.f === pick); pick = fs[Math.max(0, i - 1)].f; render(); e.preventDefault(); }
-    else if (k === 'z' || k === 'Z') { relZoom = relZoom >= 4 ? 1 : relZoom * 2; render(); }
-    else if (k === 'Enter') { if (!$('#relgo').disabled) $('#relgo').click(); }
+  } else if (phase === 'loc' || phase === 'rel') {
+    if (k === 'ArrowRight') { nav(1); e.preventDefault(); }
+    else if (k === 'ArrowLeft') { nav(-1); e.preventDefault(); }
+    else if (k === 'ArrowUp') { nav(12); e.preventDefault(); }
+    else if (k === 'ArrowDown') { nav(-12); e.preventDefault(); }
+    else if (k === 'z' || k === 'Z') { if (phase === 'rel') { relZoom = relZoom >= 4 ? 1 : relZoom * 2; render(); } }
+    else if (k === 'Enter') {
+      if (phase === 'loc') { if (!$('#locgo').disabled) $('#locgo').click(); }
+      else $('#relgo').click();
+    }
   }
 });
 addEventListener('resize', () => { if (!st.get(LS.mode, null)) autoMode(); render(); });
@@ -475,15 +689,26 @@ setInterval(flush, 20000);
 function autoMode() { mode = innerWidth >= 700 ? 'tablet' : 'mobile'; }
 $('#mMode').onclick = () => { mode = mode === 'tablet' ? 'mobile' : 'tablet'; st.set(LS.mode, mode); render(); };
 $('#mSync').onclick = async () => { await flush(); await pull(); $('#mstat').textContent = stat(); render(); };
-$('#mRedo').onclick = () => { phase = 'rel'; page = 0; pick = relOf(task().video_id); $('#menuDlg').close(); render(); };
+$('#mRedo').onclick = () => {
+  const t = task();
+  $('#menuDlg').close();
+  if (stageOf(t) === 'locate') { phase = 'loc'; lfi = 0; locPt = null; }
+  else {
+    phase = 'rel'; rci = 0;
+    const r = relOf(t.video_id);
+    if (r !== null) { const i = t.frames.findIndex(x => x.f === r); if (i >= 0) rci = i; }
+  }
+  render();
+};
 $('#mReset').onclick = () => { localStorage.removeItem(LS.cfg); location.reload(); };
 $('#mClose').onclick = () => $('#menuDlg').close();
 $('#mJson').onclick = () => {
-  const rel = Object.values(REL).filter(r => r.release_confirmed_by_human);
+  const rel = Object.values(REL).filter(r => statusOf(r.video_id) === 'confirmed' && r.release_confirmed_by_human);
+  const excl = Object.values(REL).filter(r => statusOf(r.video_id) === 'excluded');
   const keys = new Set();
   for (const r of rel) for (let i = -D.pre; i <= D.post; i++) keys.add(posKey(r.video_id, r.release_frame_human + i));
   const pos = Object.values(POS).filter(p => p.confirmed_by_human && keys.has(posKey(p.video_id, p.frame_index)));
-  const b = new Blob([JSON.stringify({set: SET(), release: rel, positions: pos}, null, 1)],
+  const b = new Blob([JSON.stringify({set: SET(), release: rel, excluded: excl, positions: pos}, null, 1)],
                      {type: 'application/json'});
   const u = URL.createObjectURL(b), a2 = document.createElement('a');
   a2.href = u; a2.download = 'relui_' + SET() + '.json'; document.body.append(a2); a2.click();
@@ -491,9 +716,9 @@ $('#mJson').onclick = () => {
 };
 function stat() {
   const q = st.get(LS.q, []).length;
-  const nr = Object.values(REL).filter(r => r.release_confirmed_by_human).length;
-  return '版 ' + APP_VER + '　' + SET() + '　リリース確定 ' + nr + '/' + D.tasks.length
-         + ' 本　未送信 ' + q + ' 件　表示 ' + mode;
+  const n = s => D.tasks.filter(t => statusOf(t.video_id) === s).length;
+  return '版 ' + APP_VER + '　' + SET() + '　リリース確定 ' + n('confirmed') + '・位置合わせ済み ' + n('located')
+         + '・除外 ' + n('excluded') + ' / ' + D.tasks.length + ' 本　未送信 ' + q + ' 件　表示 ' + mode;
 }
 $('#menu').onclick = () => { $('#mstat').textContent = stat(); $('#menuDlg').showModal(); };
 
@@ -516,6 +741,12 @@ async function boot() {
     document.body.innerHTML = '<p style="padding:20px;color:#e8735a">消費済み test が混ざっている: '
       + leak.join(' ') + '</p>';
     throw new Error('test leak');
+  }
+  const sel = $('#exReason');
+  sel.innerHTML = '';
+  for (const [code, label] of REASONS) {
+    const o = document.createElement('option'); o.value = code; o.textContent = label + '（' + code + '）';
+    sel.append(o);
   }
   REL = st.get(LS.rel, {}); POS = st.get(LS.pos, {});
   // 旧版は cap_annotations を丸ごと読み込んでいたので、train/val や test の旧正解が端末に残っている。
@@ -547,10 +778,13 @@ async function boot() {
 async function start() {
   await pull();
   const k = D.tasks.findIndex(t => {
-    const r = relOf(t.video_id);
+    const v = t.video_id, s = statusOf(v);
+    if (s === 'excluded') return false;
+    if (stageOf(t) === 'locate') return s !== 'located';
+    const r = relOf(v);
     if (r === null) return true;
     for (let i = -D.pre; i <= D.post; i++)
-      if (!(POS[posKey(t.video_id, r + i)] || {}).confirmed_by_human) return true;
+      if (!(POS[posKey(v, r + i)] || {}).confirmed_by_human) return true;
     return false;
   });
   vi = k < 0 ? 0 : k;

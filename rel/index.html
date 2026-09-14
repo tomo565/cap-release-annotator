@@ -24,7 +24,7 @@
  .pane{position:relative;background:#000;border-radius:8px;overflow:hidden;min-height:110px}
  canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
  .tag{position:absolute;left:6px;top:6px;background:rgba(0,0,0,.6);color:var(--dim);
-   font-size:11px;padding:3px 8px;border-radius:4px}
+   font-size:12px;padding:3px 8px;border-radius:4px}
  #grid{flex:1;overflow:auto;display:grid;gap:5px;padding:2px}
  .cell{position:relative;background:#000;border:2px solid var(--line);border-radius:6px;
    overflow:hidden;aspect-ratio:1/1}
@@ -32,22 +32,35 @@
  .cell span{position:absolute;left:3px;bottom:2px;background:rgba(0,0,0,.65);
    color:#dcdcdc;font-size:11px;padding:0 5px;border-radius:3px;font-variant-numeric:tabular-nums}
  .cell.sel{border-color:var(--hint);box-shadow:0 0 0 2px var(--hint) inset}
- #ctrl{flex:none;background:var(--panel);border-top:1px solid var(--line);padding:6px 8px 8px;max-height:48vh;overflow:auto}
- .row{display:flex;gap:5px;margin-bottom:6px}
+ #ctrl{flex:none;background:var(--panel);border-top:1px solid var(--line);padding:6px 8px 8px;max-height:52vh;overflow:auto}
+ .row{display:flex;gap:5px;margin-bottom:6px;align-items:center}
  .row button{flex:1;padding:11px 4px;font-size:14px;background:#232830;color:var(--fg);
-   border:1px solid var(--line);border-radius:7px}
+   border:1px solid var(--line);border-radius:7px;min-height:46px}
  .row button.on{background:var(--hint);color:#000;border-color:var(--hint);font-weight:700}
- #go{flex:2.2;background:var(--ok);color:#05210d;font-weight:700;border-color:var(--ok);font-size:16px}
- #go:disabled{background:#2a2f37;color:#6b7280;border-color:var(--line)}
+ #go,#relgo,#locgo{flex:2.2;background:var(--ok);color:#05210d;font-weight:700;border-color:var(--ok);font-size:16px}
+ #go:disabled,#locgo:disabled{background:#2a2f37;color:#6b7280;border-color:var(--line)}
+ #exbtn1,#exbtn2{flex:1;background:#3a2626;color:#f3b3a6;border-color:#5a3434}
+ /* 前後移動。iPad で押しやすい大きさにする */
+ #navrow button{font-size:16px;font-variant-numeric:tabular-nums;min-height:52px}
+ #jumprow{flex-wrap:wrap}
+ #curf{flex:0 0 100%;font-size:14px;color:var(--fg);font-variant-numeric:tabular-nums}
+ #slider{flex:1 1 60%;min-width:180px;height:40px;accent-color:var(--hint)}
+ #fnum{flex:0 0 96px;padding:10px 6px;font-size:16px;background:#0e1014;color:var(--fg);
+   border:1px solid var(--line);border-radius:7px;min-height:46px}
+ #fgo{flex:0 0 72px}
+ #msgrow{flex-wrap:wrap}
+ #msg{flex:0 0 100%;padding:8px 4px;font-size:15px}
  #films{display:flex;gap:2px;flex-wrap:nowrap;overflow-x:auto;margin-top:5px;padding-bottom:2px}
  .fr{flex:none;min-width:32px;height:26px;border:1px solid var(--line);border-radius:4px;font-size:11px;
    display:flex;align-items:center;justify-content:center;background:#232830;font-variant-numeric:tabular-nums}
  .fr.draft{background:var(--draft);color:#000}.fr.done{background:var(--ok);color:#000}
  .fr.cur{outline:2px solid var(--hint);outline-offset:1px}
  #vids{display:flex;gap:3px;flex-wrap:nowrap;overflow-x:auto;margin-top:5px;padding-bottom:2px}
- .vd{flex:none;padding:3px 7px;border:1px solid var(--line);border-radius:5px;font-size:11px;
+ .vd{flex:none;padding:5px 8px;border:1px solid var(--line);border-radius:5px;font-size:12px;
    background:#232830;white-space:nowrap;font-variant-numeric:tabular-nums}
  .vd.done{background:var(--ok);color:#000}.vd.part{background:#5b4a12;color:#fff}
+ .vd.wait{background:#243248;color:#8ab4f8}
+ .vd.excl{background:#3a2222;color:#e8735a;text-decoration:line-through}
  .vd.cur{outline:2px solid var(--hint)}
  #state{display:flex;gap:10px;justify-content:space-between;font-size:12px;color:var(--dim);
    margin-top:5px;flex-wrap:wrap}
@@ -60,11 +73,12 @@
  dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:10px;
    max-width:min(92vw,560px);padding:16px}
  dialog::backdrop{background:rgba(0,0,0,.7)}
- dialog input{width:100%;padding:9px;margin:4px 0 10px;background:#0e1014;color:var(--fg);
-   border:1px solid var(--line);border-radius:6px;font-size:14px}
- dialog button{padding:10px 14px;background:#232830;color:var(--fg);border:1px solid var(--line);
-   border-radius:7px;font-size:14px;margin-right:6px}
+ dialog input,dialog select{width:100%;padding:10px;margin:4px 0 12px;background:#0e1014;color:var(--fg);
+   border:1px solid var(--line);border-radius:6px;font-size:15px}
+ dialog button{padding:11px 16px;background:#232830;color:var(--fg);border:1px solid var(--line);
+   border-radius:7px;font-size:15px;margin-right:6px}
  dialog h3{margin:0 0 8px}dialog p{color:var(--dim);font-size:13px;margin:6px 0}
+ #exOk{background:#5a3434;border-color:#7a4444;color:#fff}
  /* スマホは1枚を大きく。タブレットは2ペイン。 */
  body.mobile #body{flex-direction:column}
  body.mobile #mainwrap{flex:1.9}
@@ -128,11 +142,39 @@
   <button id="skip">見送り</button>
   <button id="go" disabled>確定して次へ</button>
  </div>
- <div class="row" id="relrow" style="display:none">
-  <button id="back12">◀ 前を見る</button>
-  <button id="fwd12">後を見る ▶</button>
-  <button id="relgo" disabled>このコマで確定</button>
+
+ <!-- ① 位置合わせ -->
+ <div class="row" id="locrow" style="display:none">
+  <button id="exbtn1">使用不可</button>
+  <button id="locgo" disabled>手をタップしてから確定</button>
  </div>
+ <!-- ② リリース選択 -->
+ <div class="row" id="relrow" style="display:none">
+  <button id="exbtn2">使用不可</button>
+  <button id="relgo">このコマで確定</button>
+ </div>
+ <!-- ①② 共通の前後移動 -->
+ <div class="row" id="navrow" style="display:none">
+  <button data-d="-48">◀ 48</button>
+  <button data-d="-12">◀ 12</button>
+  <button data-d="-1">◀ 1</button>
+  <button data-d="1">1 ▶</button>
+  <button data-d="12">12 ▶</button>
+  <button data-d="48">48 ▶</button>
+ </div>
+ <div class="row" id="jumprow" style="display:none">
+  <span id="curf"></span>
+  <input type="range" id="slider" min="0" max="0" value="0" step="1">
+  <input type="number" id="fnum" inputmode="numeric" placeholder="コマ番号">
+  <button id="fgo">移動</button>
+ </div>
+ <!-- 準備中・除外済みの表示 -->
+ <div class="row" id="msgrow" style="display:none">
+  <div id="msg"></div>
+  <button id="undoex">除外を取り消して探し直す</button>
+  <button id="relocate">位置合わせをやり直す</button>
+ </div>
+
  <div id="state"><span id="total"></span><span id="net">接続待ち</span><span id="who2"></span></div>
  <div id="vids"></div>
  <div id="films"></div>
@@ -147,6 +189,17 @@
  <button id="sOk">はじめる</button>
 </dialog>
 
+<dialog id="exDlg">
+ <h3>この投球を使用不可にする</h3>
+ <p>映像全体を見ても正しいリリースのコマを決められないときに使います。理由を選んでください。</p>
+ <label>理由</label>
+ <select id="exReason"></select>
+ <label>メモ（「その他」のときは必須）</label>
+ <input id="exNote" autocapitalize="off">
+ <button id="exOk">使用不可にする</button>
+ <button id="exCancel">やめる</button>
+</dialog>
+
 <dialog id="menuDlg">
  <h3>メニュー</h3>
  <p id="mstat"></p>
@@ -154,12 +207,12 @@
  <button id="mBig">スマホ: 一覧 / 1コマ拡大 切替</button>
  <button id="mSync">いま同期する</button>
  <button id="mJson">JSONで書き出す</button>
- <button id="mRedo">この投球のリリースを選び直す</button>
+ <button id="mRedo">この投球をやり直す</button>
  <button id="mReset">接続設定をやり直す</button>
  <p style="color:var(--bad)">自動推定や既存のリリース値は表示していません。映像だけで判断してください。</p>
  <button id="mClose">閉じる</button>
 </dialog>
 
-<script src="config.js?v=3"></script>
-<script src="app.js?v=3"></script>
+<script src="config.js?v=4"></script>
+<script src="app.js?v=4"></script>
 </html>
