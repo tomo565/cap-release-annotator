@@ -17,7 +17,7 @@
    ・保存形式はスマホとタブレットで同じ。途中で端末を変えても続けられる。 */
 
 const $ = s => document.querySelector(s);
-const APP_VER = '4.4';   // 位置合わせ・自由な前後移動・使用不可。4.1 で位置合わせも1コマ送りに
+const APP_VER = '4.5';   // 位置合わせ・自由な前後移動・使用不可。4.1 で位置合わせも1コマ送りに
 // 入力セットは URL で選ぶ。既定は relcheck（これまでの URL の挙動を変えない）。
 const SET_PARAM = (new URLSearchParams(location.search).get('set') || 'relcheck');
 const TASK_FILE = SET_PARAM === 'relcheck' ? 'data/tasks.json' : ('data/tasks_' + SET_PARAM + '.json');
@@ -51,6 +51,8 @@ const st = {
 const task = () => D.tasks[vi];
 const SET = () => D.set;
 const stageOf = t => t.stage || 'select';
+// 確認用セット（anchorcheck など）: release のコマだけ選ぶ。14コマの位置は打たない。
+const RELONLY = () => !!D && D.mode === 'release_only';
 function statusOf(v) {
   const r = REL[v];
   if (!r) return null;
@@ -471,6 +473,12 @@ function render() {
     setNav(rci, fs.length, cur.f, fs[0].f, fs[fs.length - 1].f, 1);
     $('#relgo').textContent = 'コマ ' + cur.f + ' をリリースとして確定';
     showRow('#relocbtn', !!(t.lframes && t.lframes.length));
+    showRow('#exbtn2', !RELONLY());
+    if (RELONLY()) {
+      showRow('#relocbtn', false);
+      $('#rule').innerHTML = RULE_REL.split('。')[0] + '。<b>確認用：リリースのコマだけ選びます</b>（14コマの位置は打ちません）';
+      if (relOf(t.video_id) !== null) $('#relgo').textContent = 'コマ ' + cur.f + ' で選び直す（この投球は選択済み）';
+    }
   } else if (phase === 'pos') {
     $('#grid').style.display = 'none';
     $('#mainwrap').style.display = ''; $('#zoomwrap').style.display = '';
@@ -511,6 +519,11 @@ function render() {
                                      : ('全体 ' + all + '/' + tot);
   $('#bar').style.width = (tot ? all / tot * 100 : 0) + '%';
   $('#who2').textContent = who;
+  if (RELONLY()) {
+    const k = D.tasks.filter(x => relOf(x.video_id) !== null).length;
+    $('#total').textContent = 'リリース選択 ' + k + '/' + D.tasks.length;
+    $('#bar').style.width = (k / D.tasks.length * 100) + '%';
+  }
 
   const fw = $('#films'); fw.innerHTML = '';
   if (phase === 'pos') w.forEach((f, i) => {
@@ -530,6 +543,7 @@ function render() {
     if (s === 'excluded') { label = ' 除外'; cls = ' excl'; }
     else if (stageOf(x) === 'locate') { label = locDone(x) ? ' 準備中' : ' 探す'; cls = locDone(x) ? ' wait' : ''; }
     else if (cropStale(x)) { label = ' 準備中'; cls = ' wait'; }
+    else if (RELONLY()) { const ok = relOf(x.video_id) !== null; label = ok ? ' 選択済' : ' 未'; cls = ok ? ' done' : ''; }
     else {
       const n = countDone(x), r = relOf(x.video_id);
       label = r === null ? ' 未' : (' ' + n + '/' + full);
@@ -554,13 +568,18 @@ function startVideo() {
     lfi = r.locate_frame != null ? lfiNear(t, r.locate_frame) : 0;   // 取り消した場合も時刻の近くから
   } else if (cropStale(t)) {
     phase = 'wait';
-  } else if (relOf(v) === null) {
+  } else if (relOf(v) === null || RELONLY()) {
     phase = 'rel';
     rci = 0;
     // 人が自分で位置合わせした投球は、その人の打ったコマから見せる（自動探索の値ではない）
     const r = REL[v] || {};
     if (t.source === 'located' && r.locate_frame != null) {
       const i = t.frames.findIndex(x => x.f === r.locate_frame);
+      if (i >= 0) rci = i;
+    }
+    // 確認用セットは配布ファイルで決めた開始位置から。選び直すときも自分の前の選択には合わせない
+    if (t.start_frame != null) {
+      const i = t.frames.findIndex(x => x.f === t.start_frame);
       if (i >= 0) rci = i;
     }
   } else {
@@ -607,6 +626,7 @@ $('#relgo').onclick = () => {
     }
   }
   saveRel(f);
+  if (RELONLY()) { nextVideo(); return; }
   phase = 'pos'; fi = 0; render();
 };
 function openExclude() {
@@ -740,7 +760,8 @@ $('#mRedo').onclick = () => {
   else {
     phase = 'rel'; rci = 0;
     const r = relOf(t.video_id);
-    if (r !== null) { const i = t.frames.findIndex(x => x.f === r); if (i >= 0) rci = i; }
+    const tf = RELONLY() ? t.start_frame : r;
+    if (tf != null) { const i = t.frames.findIndex(x => x.f === tf); if (i >= 0) rci = i; }
   }
   render();
 };
@@ -826,6 +847,7 @@ async function start() {
     if (s === 'excluded') return false;
     if (stageOf(t) === 'locate') return !locDone(t);
     if (cropStale(t)) return false;
+    if (RELONLY()) return relOf(v) === null;
     const r = relOf(v);
     if (r === null) return true;
     for (let i = -D.pre; i <= D.post; i++)
