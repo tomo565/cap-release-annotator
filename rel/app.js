@@ -17,12 +17,16 @@
    ・保存形式はスマホとタブレットで同じ。途中で端末を変えても続けられる。 */
 
 const $ = s => document.querySelector(s);
-const APP_VER = '4.5';   // 位置合わせ・自由な前後移動・使用不可。4.1 で位置合わせも1コマ送りに
+const APP_VER = '4.6';   // 4.6: サーバーで読み直して確かめてから同期済み。確定は明示操作でだけ外す。古い保存で上書きしない
 // 入力セットは URL で選ぶ。既定は relcheck（これまでの URL の挙動を変えない）。
 const SET_PARAM = (new URLSearchParams(location.search).get('set') || 'relcheck');
 const TASK_FILE = SET_PARAM === 'relcheck' ? 'data/tasks.json' : ('data/tasks_' + SET_PARAM + '.json');
+// 4.6: リリースと打点は set ごとに保存する（別 set を開いても消えない）。待ち行列は全 set 共通で、キーに set を含める。
+// 旧版のキー（relui.rel / relui.pos / relui.queue）は読むだけで書き換えない（未送信の唯一の控えかもしれない）。
 const LS = {cfg: 'relui.cfg', who: 'relui.who', mode: 'relui.mode',
-            rel: 'relui.rel', pos: 'relui.pos', q: 'relui.queue'};
+            legacyRel: 'relui.rel', legacyPos: 'relui.pos', legacyQ: 'relui.queue',
+            q: 'relui.queue2', migrated: 'relui.queue.migrated', owner: 'relui.owner', log: 'relui.overwritten',
+            rel: set => 'relui.rel.' + set, pos: set => 'relui.pos.' + set};
 const TEST_VIDS = ['184258', '184307', '184442', '184917', '184956', '185159', '185349', '185402',
                    '154622', '154629', '154640', '154649', '154711', '154804', '154815', '154849',
                    '160931', '161044', '161103'];
@@ -43,10 +47,18 @@ let D = null, vi = 0, fi = 0, phase = 'rel', rci = 0, lfi = 0, locPt = null,
     cfg = null, who = '', mode = 'mobile', expanded = false, t0 = 0,
     REL = {}, POS = {}, imgs = new Map(), zoomDrag = null,
     relZoom = 1, relOnly = false;   // relZoom 1/2/4 倍、relOnly はスマホで1コマだけ大きく見る
+// 同期の状態。CONFLICT = 送ろうとしたら別の画面・端末が先に変えていた行、MIS = 端末とサーバーが食い違っていて待ち行列に無い行
+let storageErr = null, readOnly = false, lastErr = null, lastVerified = null, syncing = false,
+    CONFLICT = {}, MIS = {}, SRVPOS = {}, SRVREL = {};
+const INST = Math.random().toString(36).slice(2) + Date.now().toString(36);   // この画面の識別子
 
 const st = {
   get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  // 4.6: 保存に失敗したら黙って捨てない（容量不足・プライベートブラウズなど）
+  set(k, v) {
+    try { localStorage.setItem(k, JSON.stringify(v)); return true; }
+    catch (e) { storageErr = String((e && e.message) || e); showNet(); return false; }
+  }
 };
 const task = () => D.tasks[vi];
 const SET = () => D.set;
@@ -95,47 +107,152 @@ function api(path, opt) {
 }
 
 // ---------- 保存 ----------
+// 流れ: 端末に保存 → 待ち行列 → 1件ずつサーバーへ書く → サーバーから読み直して一致を確かめる → そこで初めて待ち行列から消す。
+// 書くときは「最後に見たサーバーの更新時刻（srv_at）」のときだけ更新する。変わっていたら上書きせず競合として人に見せる。
+const enc = encodeURIComponent;
+const qKey = (kind, r) => kind === 'pos' ? ('pos|' + r.set_name + '|' + r.video_id + '|' + r.frame_index)
+                                         : ('rel|' + r.set_name + '|' + r.video_id);
+const numEq = (a, b) => (a == null && b == null) || (a != null && b != null && Math.abs(a - b) < 1e-6);
+function samePos(a, b) {   // 中身（打点・見え方・確定・コマ）が同じか。時刻や入力者は比べない
+  return !!a && !!b && a.video_id === b.video_id && a.set_name === b.set_name && a.frame_index === b.frame_index
+    && a.release_offset === b.release_offset && numEq(a.x, b.x) && numEq(a.y, b.y)
+    && (a.visibility || '見える') === (b.visibility || '見える')
+    && (a.confirmed_by_human === true) === (b.confirmed_by_human === true);
+}
+function sameRel(a, b) {
+  const stt = r => r.status || (r.release_frame_human != null ? 'confirmed' : null);
+  return !!a && !!b && a.video_id === b.video_id && a.set_name === b.set_name && stt(a) === stt(b)
+    && numEq(a.release_frame_human, b.release_frame_human)
+    && (a.release_confirmed_by_human === true) === (b.release_confirmed_by_human === true)
+    && (a.exclusion_reason || null) === (b.exclusion_reason || null) && (a.exclusion_note || null) === (b.exclusion_note || null)
+    && numEq(a.locate_frame, b.locate_frame) && numEq(a.locate_x, b.locate_x) && numEq(a.locate_y, b.locate_y);
+}
+const sameRow = (kind, local, srv) => kind === 'pos' ? samePos(posRow(local), srv) : sameRel(relRow(local), srv);
+
 function queuePush(kind, row) {
-  const q = st.get(LS.q, []);
-  const same = q.findIndex(x => x.kind === kind && x.key === row.__key);
-  const item = {kind, key: row.__key, row};
-  if (same >= 0) q[same] = item; else q.push(item);
-  st.set(LS.q, q);
+  const k = qKey(kind, row), q = st.get(LS.q, []);
+  const i = q.findIndex(x => x.key === k);
+  const item = {kind, key: k, row, at: row.updated_at};
+  if (i >= 0) q[i] = item; else q.push(item);
+  if (!st.set(LS.q, q)) { alert('★端末に保存できませんでした。この入力は保存されていません（' + storageErr + '）'); return false; }
+  delete MIS[k]; delete CONFLICT[k];
   flush();
+  return true;
 }
-let syncing = false, lastOk = false;
+
+// ---- 別の画面との取り合い。後から開いた画面・別の画面が「続ける」を押したら、こちらは保存しない ----
+let bc = null;
+try { bc = new BroadcastChannel('relui'); bc.onmessage = ev => { if (ev.data && ev.data.t === 'claim' && ev.data.id !== INST) lockOut(); }; } catch (e) {}
+function lockOut() { readOnly = true; const L = $('#lock'); if (L) L.hidden = false; showNet(); }
+function claim() {
+  st.set(LS.owner, {id: INST, ts: Date.now()});
+  if (bc) { try { bc.postMessage({t: 'claim', id: INST}); } catch (e) {} }
+  const wasRO = readOnly;
+  readOnly = false;
+  const L = $('#lock'); if (L) L.hidden = true;
+  if (wasRO && D) { REL = st.get(LS.rel(SET()), {}); POS = st.get(LS.pos(SET()), {}); pull().then(() => { flush(); render(); }); }
+  showNet();
+}
+function lockCheck() {   // 起動時。別の画面が数秒以内に動いていたら、こちらは保存不可から始める
+  const o = st.get(LS.owner, null);
+  if (o && o.id !== INST && Date.now() - o.ts < 8000) lockOut(); else claim();
+}
+function canWrite() {
+  if (readOnly) return false;
+  const o = st.get(LS.owner, null);
+  if (o && o.id !== INST && Date.now() - o.ts < 8000) { lockOut(); return false; }
+  return true;
+}
+// 画面を閉じる・再読み込みするときは、自分の「使用中」の印だけを外す（再読み込みで自分自身に締め出されないように）
+addEventListener('pagehide', () => {
+  const o = st.get(LS.owner, null);
+  if (o && o.id === INST) { try { localStorage.removeItem(LS.owner); } catch (e) {} }
+});
+setInterval(() => {   // 画面が見えている間だけ「この画面が使用中」を書く
+  if (readOnly || document.visibilityState !== 'visible') return;
+  const o = st.get(LS.owner, null);
+  if (o && o.id !== INST && Date.now() - o.ts < 8000) lockOut();
+  else st.set(LS.owner, {id: INST, ts: Date.now()});
+}, 2000);
+
+async function fetchOne(tbl, filt) {
+  const r = await api(tbl + '?select=*&' + filt);
+  if (!r.ok) throw new Error('HTTP ' + r.status + ' 読み直し: ' + (await r.text()).slice(0, 160));
+  const rows = await r.json();
+  return rows[0] || null;
+}
+function filterOf(kind, body) {
+  return 'video_id=eq.' + enc(body.video_id) + '&set_name=eq.' + enc(body.set_name)
+         + (kind === 'pos' ? '&frame_index=eq.' + body.frame_index : '');
+}
+async function writeOne(it) {
+  const pos = it.kind === 'pos', tbl = pos ? 'cap_release_positions' : 'cap_release_marks';
+  const body = pos ? posRow(it.row) : relRow(it.row), filt = filterOf(it.kind, body);
+  const H = {Prefer: 'return=representation'}, lab = pos ? '位置' : 'リリース';
+  if (it.row.srv_at) {
+    // 最後に見たサーバーの行のままなら更新する。別の画面・端末が先に変えていたら 0 行になる
+    const r = await api(tbl + '?' + filt + '&updated_at=eq.' + enc(it.row.srv_at),
+                        {method: 'PATCH', headers: H, body: JSON.stringify(body)});
+    if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + lab + ': ' + (await r.text()).slice(0, 160));
+    const rows = await r.json();
+    if (rows.length === 1) return {row: rows[0]};
+  } else {
+    const r = await api(tbl, {method: 'POST', headers: H, body: JSON.stringify(body)});
+    if (r.ok) return {row: (await r.json())[0]};
+    if (r.status !== 409) throw new Error('HTTP ' + r.status + ' ' + lab + ': ' + (await r.text()).slice(0, 160));
+  }
+  const cur = await fetchOne(tbl, filt);   // 上書きしないで、今のサーバーの行と比べる
+  if (cur && (pos ? samePos(body, cur) : sameRel(body, cur))) return {row: cur};
+  return {conflict: true, server: cur};
+}
+function storeOf(kind, set) { return set === (D && D.set) ? (kind === 'pos' ? POS : REL) : st.get(kind === 'pos' ? LS.pos(set) : LS.rel(set), {}); }
+function saveStore(kind, set, obj) { st.set(kind === 'pos' ? LS.pos(set) : LS.rel(set), obj); }
+function localKey(kind, r) { return kind === 'pos' ? posKey(r.video_id, r.frame_index) : r.video_id; }
+function ack(it, srv) {
+  // 送った内容がサーバーにあると確かめた。待ち行列から消す（送信中に同じ行をまた直していたら、新しい基準で送り直す）
+  const q = st.get(LS.q, []), i = q.findIndex(x => x.key === it.key);
+  if (i >= 0) {
+    if (q[i].at === it.at) q.splice(i, 1);
+    else if ((q[i].row.srv_at || null) === (it.row.srv_at || null)) q[i].row.srv_at = srv.updated_at;
+  }
+  st.set(LS.q, q);
+  const set = it.row.set_name, store = storeOf(it.kind, set), lk = localKey(it.kind, it.row), l = store[lk];
+  if (l && (l.updated_at === it.row.updated_at || (l.srv_at || null) === (it.row.srv_at || null))) {
+    l.srv_at = srv.updated_at; saveStore(it.kind, set, store);
+  }
+  (it.kind === 'pos' ? SRVPOS : SRVREL)[it.key] = srv;
+}
 async function flush() {
-  if (syncing || !cfg) return;
-  const q = st.get(LS.q, []);
-  if (!q.length) { net(lastOk ? 'ok' : 'offline', 0); return; }
-  syncing = true; net('sending', q.length);
+  if (syncing || !cfg || !D || !canWrite()) { showNet(); return; }
+  const q = st.get(LS.q, []).filter(x => !CONFLICT[x.key]);
+  if (!q.length) { showNet(); return; }
+  syncing = true; lastErr = null; showNet();
+  const done = [];
   try {
-    const rel = q.filter(x => x.kind === 'rel').map(x => relRow(x.row));
-    // 他 set の行は送らない（念のため）
-    const pos = q.filter(x => x.kind === 'pos' && x.row.set_name === SET()).map(x => posRow(x.row));
-    if (rel.length) {
-      const r = await api('cap_release_marks?on_conflict=video_id,set_name',
-        {method: 'POST', headers: {Prefer: 'resolution=merge-duplicates,return=minimal'},
-         body: JSON.stringify(rel)});
-      if (!r.ok) throw new Error('HTTP ' + r.status + ' リリース: ' + (await r.text()).slice(0, 160));
+    for (const it of q) {   // 1件ずつ。HTTP エラーはその行だけ残して次へ。通信不可なら残りは次回
+      try {
+        const r = await writeOne(it);
+        if (r.conflict) { CONFLICT[it.key] = {kind: it.kind, local: it.row, server: r.server, queued: true}; continue; }
+        done.push(it);
+      } catch (e) {
+        lastErr = String(e.message || e);
+        if (!lastErr.startsWith('HTTP')) break;
+      }
     }
-    if (pos.length) {
-      const r = await api('cap_release_positions?on_conflict=video_id,set_name,frame_index',
-        {method: 'POST', headers: {Prefer: 'resolution=merge-duplicates,return=minimal'},
-         body: JSON.stringify(pos)});
-      if (!r.ok) throw new Error('HTTP ' + r.status + ' 位置: ' + (await r.text()).slice(0, 160));
+    for (const it of done) {   // 読み直し。送った内容と同じ行がサーバーにあることを確かめる
+      const body = it.kind === 'pos' ? posRow(it.row) : relRow(it.row);
+      const srv = await fetchOne(it.kind === 'pos' ? 'cap_release_positions' : 'cap_release_marks', filterOf(it.kind, body));
+      if (srv && (it.kind === 'pos' ? samePos(body, srv) : sameRel(body, srv))) ack(it, srv);
+      else CONFLICT[it.key] = {kind: it.kind, local: it.row, server: srv, queued: true};
     }
-    const rest = st.get(LS.q, []).filter(x => !(x.kind === 'pos' && x.row.set_name !== SET()))
-                                 .filter(x => !q.some(y => y.kind === x.kind && y.key === x.key
-                                                     && y.row.updated_at === x.row.updated_at));
-    st.set(LS.q, rest);
-    lastOk = true; net(rest.length ? 'queued' : 'ok', rest.length);
+    if (done.length && !lastErr) lastVerified = new Date();
   } catch (e) {
-    lastOk = false;
-    const m = String(e.message || e);
-    net(m.startsWith('HTTP') ? 'error' : 'offline', q.length, m);
-  } finally { syncing = false; render(); }
+    lastErr = String(e.message || e);
+  } finally { syncing = false; showNet(); render(); }
+  const rest = st.get(LS.q, []).filter(x => !CONFLICT[x.key]);
+  if (rest.length && !lastErr) setTimeout(flush, 300);   // 送信中に増えた分
 }
+
 // 送る列を決め打ちにする。読み込んだ行の id や created_at を送ると、Supabase が送信全体を拒否する。
 // 全行が同じ列を持たないと一括送信も拒否されるので、無い列には既定値を入れる。
 // 状態ごとの約束（確定ならリリースのコマあり、除外なら理由あり・コマなし）は表の側でも拒否する。
@@ -165,34 +282,132 @@ function posRow(r) {
           confirmed_by_human: r.confirmed_by_human === true,
           annotator: r.annotator || null};
 }
-function net(s, n, msg) {
-  const e = $('#net'); e.className = '';
-  if (s === 'ok') e.textContent = '同期済み';
-  else if (s === 'sending') e.textContent = '送信中…';
-  else if (s === 'queued') { e.className = 'q'; e.textContent = '未送信 ' + n + ' 件'; }
-  else if (s === 'error') { e.className = 'bad';
-    e.textContent = '★保存エラー 未送信 ' + n + ' 件（端末に保存済み） ' + (msg || '').slice(0, 90); }
-  else { e.className = 'bad'; e.textContent = n ? ('通信不可 未送信 ' + n + ' 件（端末に保存済み）')
-                                               : '通信不可（端末に保存済み）'; }
-  if (msg) e.title = msg;
+function showNet() {
+  const e = $('#net');
+  if (!e) return;
+  const nq = st.get(LS.q, []).length, nc = Object.keys(CONFLICT).length, nm = Object.keys(MIS).length;
+  e.className = '';
+  if (readOnly) { e.className = 'bad'; e.textContent = '★この画面では保存できません（別の画面で開いています）'; return; }
+  if (storageErr) { e.className = 'bad'; e.textContent = '★端末に保存できません: ' + storageErr.slice(0, 60); return; }
+  if (nc) { e.className = 'bad'; e.textContent = '★サーバーと競合 ' + nc + ' 件（☰ → サーバーとの差分）'; return; }
+  if (nm) { e.className = 'bad'; e.textContent = '★サーバーと不一致 ' + nm + ' 件（☰ → サーバーとの差分）'; return; }
+  if (syncing) { e.textContent = '送信中…（未送信 ' + nq + ' 件）'; return; }
+  if (lastErr) {
+    e.className = 'bad';
+    e.textContent = (lastErr.startsWith('HTTP') ? '★保存エラー' : '通信不可') + ' 未送信 ' + nq + ' 件（端末に保存済み） ' + lastErr.slice(0, 80);
+    return;
+  }
+  if (nq) { e.className = 'q'; e.textContent = '未送信 ' + nq + ' 件'; return; }
+  if (!lastVerified) { e.className = 'q'; e.textContent = 'サーバー未確認'; return; }
+  e.textContent = '同期済み（サーバー確認 ' + lastVerified.toTimeString().slice(0, 8) + '）';
 }
-async function pull() {
-  if (!cfg) return;
+function merge(kind, l, s, k, queued, log) {
+  const srv = Object.assign({}, s, {srv_at: s.updated_at});
+  if (!l) return srv;
+  if (sameRow(kind, l, s)) return Object.assign({}, l, {srv_at: s.updated_at});
+  if (queued.has(k)) return l;                          // 送る途中。送るときに基準の時刻で競合を判定する
+  // 端末とサーバーが違い、送る予定にも入っていない。どちらが正しいかは人が決める（黙ってどちらにも合わせない。
+  // 旧版の画面が古い値でサーバーを上書きした場合も、ここで止まる）
+  MIS[k] = {kind, local: l, server: s,
+            why: (!l.srv_at || l.srv_at === s.updated_at) ? '端末の変更が送られていない' : '別の画面・端末がサーバーを変えた'};
+  return l;
+}
+async function pull() {   // サーバーを読み、端末と照合する。端末だけにある変更は消さずに「不一致」として出す
+  if (!cfg || !D) return;
   try {
-    net('sending');
-    const r1 = await api('cap_release_marks?select=*&set_name=eq.' + encodeURIComponent(SET()) + '&limit=2000');
-    if (r1.ok) for (const row of await r1.json()) {
-      const l = REL[row.video_id];
-      if (!l || !l.updated_at || (row.updated_at && row.updated_at >= l.updated_at)) REL[row.video_id] = row;
+    const r1 = await api('cap_release_marks?select=*&set_name=eq.' + enc(SET()) + '&limit=2000');
+    const r2 = await api('cap_release_positions?select=*&set_name=eq.' + enc(SET()) + '&limit=5000');
+    if (!r1.ok || !r2.ok) throw new Error('HTTP ' + (r1.ok ? r2.status : r1.status) + ' 読み込み');
+    const marks = await r1.json(), pos = await r2.json();
+    const queued = new Set(st.get(LS.q, []).map(x => x.key)), log = st.get(LS.log, []), seen = new Set();
+    MIS = {};
+    for (const x of marks) { const k = qKey('rel', x); seen.add(k); SRVREL[k] = x; REL[x.video_id] = merge('rel', REL[x.video_id], x, k, queued, log); }
+    for (const x of pos) {
+      const k = qKey('pos', x), pk = posKey(x.video_id, x.frame_index);
+      seen.add(k); SRVPOS[k] = x; POS[pk] = merge('pos', POS[pk], x, k, queued, log);
     }
-    const r2 = await api('cap_release_positions?select=*&set_name=eq.' + encodeURIComponent(SET()) + '&limit=5000');
-    if (r2.ok) for (const row of await r2.json()) {
-      const k = posKey(row.video_id, row.frame_index), l = POS[k];
-      if (!l || !l.updated_at || (row.updated_at && row.updated_at >= l.updated_at)) POS[k] = row;
-    }
-    st.set(LS.rel, REL); st.set(LS.pos, POS);
-    lastOk = true; net(st.get(LS.q, []).length ? 'queued' : 'ok');
-  } catch (e) { lastOk = false; net('offline', st.get(LS.q, []).length, String(e.message || e)); }
+    for (const l of Object.values(REL)) { const k = qKey('rel', l); if (!seen.has(k) && !queued.has(k)) MIS[k] = {kind: 'rel', local: l, server: null}; }
+    for (const l of Object.values(POS)) { const k = qKey('pos', l); if (!seen.has(k) && !queued.has(k)) MIS[k] = {kind: 'pos', local: l, server: null}; }
+    st.set(LS.rel(SET()), REL); st.set(LS.pos(SET()), POS); st.set(LS.log, log.slice(-500));
+    lastErr = null; lastVerified = new Date();
+  } catch (e) { lastErr = String(e.message || e); }
+  showNet();
+}
+function migrateLegacy() {
+  // 旧版（4.5 まで）の保存を set ごとの保存へ写す。旧版のキーは書き換えない。新しい方を採る
+  const newer = (a, b) => !b || (a && a.updated_at && b.updated_at && new Date(a.updated_at) > new Date(b.updated_at));
+  const lr = st.get(LS.legacyRel, {}), lp = st.get(LS.legacyPos, {});
+  for (const [k, v] of Object.entries(lr)) if (v && v.set_name === D.set && newer(v, REL[k])) REL[k] = v;
+  for (const [k, v] of Object.entries(lp)) if (v && v.set_name === D.set && newer(v, POS[k])) POS[k] = v;
+  const old = st.get(LS.legacyQ, []), done = new Set(st.get(LS.migrated, [])), q = st.get(LS.q, []);
+  for (const it of old) {
+    if (!it || !it.row || !it.kind || !it.row.set_name) continue;
+    const sig = it.kind + '|' + it.row.set_name + '|' + it.row.video_id + '|' + (it.row.frame_index == null ? '' : it.row.frame_index) + '|' + it.row.updated_at;
+    if (done.has(sig)) continue;
+    const row = Object.assign({}, it.row);
+    delete row.srv_at;   // 旧版は基準の時刻を持たない → 送るときは上書きせず、サーバーの行と比べる（違えば競合）
+    const k = qKey(it.kind, row), i = q.findIndex(x => x.key === k), item = {kind: it.kind, key: k, row, at: row.updated_at, legacy: true};
+    if (i < 0) q.push(item); else if (newer(row, q[i].row)) q[i] = item;
+    done.add(sig);
+  }
+  st.set(LS.q, q); st.set(LS.migrated, [...done]);
+}
+function describe(kind, r) {
+  if (!r) return '（サーバーに行が無い）';
+  if (kind === 'pos') return (r.confirmed_by_human ? '確定' : '未確認') + '・' + (r.visibility || '見える')
+    + (r.x == null ? '' : '・(' + (+r.x).toFixed(1) + ', ' + (+r.y).toFixed(1) + ')');
+  return (r.status || '') + (r.release_frame_human != null ? '・release ' + r.release_frame_human : '')
+    + (r.exclusion_reason ? '・' + r.exclusion_reason : '') + (r.locate_frame != null ? '・位置合わせ ' + r.locate_frame : '');
+}
+function openDiff() {
+  const box = $('#diffList'); box.innerHTML = '';
+  const items = [...Object.entries(CONFLICT).map(([k, x]) => [k, x, '競合']), ...Object.entries(MIS).map(([k, x]) => [k, x, '不一致'])];
+  if (!items.length) box.textContent = '食い違いはありません。';
+  for (const [k, x, label] of items) {
+    const r = x.local, d = document.createElement('div');
+    d.style.cssText = 'border:1px solid var(--line);border-radius:6px;padding:8px;margin:6px 0';
+    const title = r.video_id + (x.kind === 'pos' ? '　コマ ' + r.frame_index + '（' + (r.release_offset >= 0 ? '+' : '') + r.release_offset + '）' : '　リリース') + '　' + r.set_name;
+    d.innerHTML = '<b></b><div class="sub"></div><div class="sub"></div>';
+    d.children[0].textContent = label + '：' + title + (x.why ? '（' + x.why + '）' : '');
+    d.children[1].textContent = '端末　 ' + describe(x.kind, r);
+    d.children[2].textContent = 'サーバー ' + describe(x.kind, x.server);
+    const b1 = document.createElement('button'), b2 = document.createElement('button');
+    b1.textContent = '端末の内容を送る'; b2.textContent = 'サーバーに合わせる';
+    b1.onclick = () => resolveDiff(k, x, 'local'); b2.onclick = () => resolveDiff(k, x, 'server');
+    d.append(b1, b2); box.append(d);
+  }
+  $('#diffDlg').showModal();
+}
+function resolveDiff(k, x, how) {
+  if (!canWrite()) { alert('この画面では保存できません（別の画面で開いています）'); return; }
+  const set = x.local.set_name, store = storeOf(x.kind, set), lk = localKey(x.kind, x.local);
+  const q = st.get(LS.q, []), i = q.findIndex(y => y.key === k);
+  if (how === 'local') {
+    // 今のサーバーの行を基準にして、端末の内容で書く（その後、読み直して確かめる）
+    const row = Object.assign({}, x.local, {srv_at: x.server ? x.server.updated_at : undefined, updated_at: new Date().toISOString()});
+    if (!x.server) delete row.srv_at;
+    store[lk] = row; saveStore(x.kind, set, store);
+    delete CONFLICT[k]; delete MIS[k];
+    if (i >= 0) q.splice(i, 1);
+    st.set(LS.q, q);
+    queuePush(x.kind, row);
+  } else {
+    const log = st.get(LS.log, []);
+    log.push({at: new Date().toISOString(), key: k, local: x.local, server: x.server, why: '人が「サーバーに合わせる」を選んだ'});
+    st.set(LS.log, log.slice(-500));
+    if (x.server) store[lk] = Object.assign({}, x.server, {srv_at: x.server.updated_at}); else delete store[lk];
+    saveStore(x.kind, set, store);
+    if (i >= 0) q.splice(i, 1);
+    st.set(LS.q, q);
+    delete CONFLICT[k]; delete MIS[k];
+  }
+  $('#diffDlg').close(); showNet(); render();
+  if (Object.keys(CONFLICT).length + Object.keys(MIS).length) openDiff();
+}
+function syncClass(v, f) {   // コマの一覧に、送信待ち・食い違いの印を付ける
+  const k = qKey('pos', {set_name: SET(), video_id: v, frame_index: f});
+  if (CONFLICT[k] || MIS[k]) return ' mis';
+  return st.get(LS.q, []).some(x => x.key === k) ? ' pend' : '';
 }
 
 // ---------- 画像 ----------
@@ -371,7 +586,7 @@ function drawLeft() {
     const r = frameRec(f); if (!r) return;
     const p = POS[posKey(task().video_id, f)];
     const d = document.createElement('div');
-    d.className = 'thumb' + (i === fi ? ' cur' : '') + (p ? (p.confirmed_by_human ? ' done' : ' draft') : '');
+    d.className = 'thumb' + (i === fi ? ' cur' : '') + (p ? (p.confirmed_by_human ? ' done' : ' draft') : '') + syncClass(task().video_id, f);
     const im = document.createElement('img'); im.src = 'img/' + r.img; im.loading = 'lazy';
     const s = document.createElement('span');
     const off = i - D.pre; s.textContent = (off >= 0 ? '+' : '') + off;
@@ -389,9 +604,14 @@ function carryLocate(v) {
 function baseRel(v) {
   return {video_id: v, set_name: SET(), expanded: expanded,
           seconds_spent: Math.round((Date.now() - t0) / 1000), ui_mode: mode,
-          annotator: who, updated_at: new Date().toISOString(), __key: v + '|' + SET()};
+          annotator: who, updated_at: new Date().toISOString(), srv_at: (REL[v] || {}).srv_at};
 }
-function putRel(row) { REL[row.video_id] = row; st.set(LS.rel, REL); queuePush('rel', row); }
+function putRel(row) {
+  if (!canWrite()) { alert('この画面では保存できません（別の画面で開いています）'); return false; }
+  REL[row.video_id] = row;
+  if (!st.set(LS.rel(SET()), REL)) { alert('★端末に保存できませんでした（' + storageErr + '）'); return false; }
+  return queuePush('rel', row);
+}
 function saveRel(frame) {
   const v = task().video_id;
   putRel(Object.assign(baseRel(v), carryLocate(v),
@@ -412,18 +632,26 @@ function saveExclude(reason, note) {
      exclusion_reason: reason, exclusion_note: note || null}));
 }
 function savePos(o) {
+  if (!canWrite()) { alert('この画面では保存できません（別の画面で開いています）'); return; }
   const v = task().video_id, f = curFrame(), now = new Date().toISOString();
+  if (f == null) return;
   const base = POS[posKey(v, f)] || {video_id: v, frame_index: f,
                                      release_offset: fi - D.pre, x: null, y: null,
                                      bbox_w: null, bbox_h: null, visibility: '見える',
                                      confirmed_by_human: false};
   const row = Object.assign({}, base, o, {release_offset: fi - D.pre, set_name: SET(),
-                                          annotator: who, updated_at: now,
-                                          __key: v + '|' + f});
+                                          annotator: who, updated_at: now});
+  delete row.__key;
   // 完全に隠れ は座標を無効化する。既存の truth_release と同じ意味にする。
   if (row.visibility === '完全に隠れ') { row.x = null; row.y = null; }
   if ('x' in o && o.x !== null && !isFinite(o.x)) return;
-  POS[posKey(v, f)] = row; st.set(LS.pos, POS); queuePush('pos', row);
+  // 4.6: 中身が変わらず、サーバーとも一致している操作は保存しない（触っただけで送り直さない）
+  const k = qKey('pos', row);
+  if (POS[posKey(v, f)] && samePos(posRow(POS[posKey(v, f)]), posRow(row)) && SRVPOS[k] && samePos(posRow(row), SRVPOS[k])
+      && !MIS[k] && !CONFLICT[k]) { render(); return; }
+  POS[posKey(v, f)] = row;
+  if (!st.set(LS.pos(SET()), POS)) { alert('★端末に保存できませんでした（' + storageErr + '）'); return; }
+  queuePush('pos', row);
   render();
 }
 
@@ -487,6 +715,7 @@ function render() {
     $('#maintag').textContent = '原寸 / タップで蓋の中心';
     const p = curPos();
     $('#go').disabled = !(p && (p.x != null || p.visibility === '完全に隠れ'));
+    $('#unconf').disabled = !(p && p.confirmed_by_human);
     document.querySelectorAll('#visrow button').forEach(b =>
       b.classList.toggle('on', !!p && p.visibility === b.dataset.v));
     drawLeft(); drawMain();
@@ -529,7 +758,7 @@ function render() {
   if (phase === 'pos') w.forEach((f, i) => {
     const d = document.createElement('div');
     const p = POS[posKey(v, f)];
-    d.className = 'fr' + (i === fi ? ' cur' : '') + (p ? (p.confirmed_by_human ? ' done' : ' draft') : '');
+    d.className = 'fr' + (i === fi ? ' cur' : '') + (p ? (p.confirmed_by_human ? ' done' : ' draft') : '') + syncClass(v, f);
     const off = i - D.pre; d.textContent = (off >= 0 ? '+' : '') + off;
     d.onclick = () => { fi = i; render(); };
     fw.append(d);
@@ -682,7 +911,7 @@ $('#main').addEventListener('pointerdown', e => {
   const ix = (px - v.ox) / v.s, iy = (py - v.oy) / v.s;
   if (!isFinite(ix) || !isFinite(iy) || ix < 0 || iy < 0 || ix > D.crop || iy > D.crop) return;
   const f = toFull({x: ix, y: iy});
-  savePos({x: +f.x.toFixed(1), y: +f.y.toFixed(1), confirmed_by_human: false});
+  savePos({x: +f.x.toFixed(1), y: +f.y.toFixed(1)});   // 4.6: 打点を動かしても確定は外さない
 });
 $('#zoom').addEventListener('pointerdown', e => {
   const p = curPos(); if (!p || p.x == null) return;
@@ -692,23 +921,25 @@ $('#zoom').addEventListener('pointerdown', e => {
 $('#zoom').addEventListener('pointermove', e => {
   if (!zoomDrag) return;
   const c = $('#zoom'), dpr = Math.min(devicePixelRatio || 1, 2), k = c._Z / dpr;
-  savePos({x: +(zoomDrag.x - (e.clientX - zoomDrag.sx) / k).toFixed(2),
-           y: +(zoomDrag.y - (e.clientY - zoomDrag.sy) / k).toFixed(2),
-           confirmed_by_human: false});
+  const nx = +(zoomDrag.x - (e.clientX - zoomDrag.sx) / k).toFixed(2), ny = +(zoomDrag.y - (e.clientY - zoomDrag.sy) / k).toFixed(2);
+  const p = curPos();
+  if (p && numEq(p.x, nx) && numEq(p.y, ny)) { e.preventDefault(); return; }   // 触っただけ（動いていない）は保存しない
+  savePos({x: nx, y: ny});   // 4.6: 確定は外さない
   e.preventDefault();
 });
 addEventListener('pointerup', () => { zoomDrag = null; });
+addEventListener('pointercancel', () => { zoomDrag = null; });
 document.querySelectorAll('#nudge button[data-d]').forEach(b => b.onclick = () => {
   const p = curPos(); if (!p || p.x == null) return;
   const d = b.dataset.d.split(',').map(Number);
-  savePos({x: +(p.x + d[0]).toFixed(2), y: +(p.y + d[1]).toFixed(2), confirmed_by_human: false});
+  savePos({x: +(p.x + d[0]).toFixed(2), y: +(p.y + d[1]).toFixed(2)});   // 4.6: 確定は外さない
 });
 document.querySelectorAll('#visrow button').forEach(b => b.onclick = () => setVis(b.dataset.v));
 function setVis(v) {
   const p = curPos();
-  if (v === '完全に隠れ') savePos({visibility: v, x: null, y: null, confirmed_by_human: false});
-  else if (p) savePos({visibility: v});
-  else savePos({visibility: v, confirmed_by_human: false});
+  // 4.6: 見え方を変えても確定は外さない（新しいコマは未確認から始まる）
+  if (v === '完全に隠れ') savePos({visibility: v, x: null, y: null});
+  else savePos({visibility: v});
 }
 $('#go').onclick = () => {
   savePos({confirmed_by_human: true});
@@ -718,8 +949,12 @@ $('#go').onclick = () => {
 };
 $('#skip').onclick = () => { const w = win(); if (fi + 1 < w.length) { fi++; render(); } else nextVideo(); };
 $('#prev').onclick = () => { if (fi > 0) { fi--; render(); } };
-$('#undo').onclick = () => {
+$('#undo').onclick = () => {   // 打点を消す。明示操作なので未確認に戻す
   savePos({x: null, y: null, visibility: '見える', confirmed_by_human: false});
+};
+$('#unconf').onclick = () => {   // 4.6: 確定を外すのはこのボタン（と取消）だけ
+  const p = curPos();
+  if (p && p.confirmed_by_human) savePos({confirmed_by_human: false});
 };
 
 addEventListener('keydown', e => {
@@ -746,9 +981,11 @@ addEventListener('keydown', e => {
     }
   }
 });
-addEventListener('resize', () => { if (!st.get(LS.mode, null)) autoMode(); render(); });
+addEventListener('resize', () => { if (!st.get(LS.mode, null)) autoMode(); if (D) render(); });   // 4.6: 読み込み前の回転でエラーにしない
 addEventListener('online', flush);
 setInterval(flush, 20000);
+// 4.6: 送る物が無いときも1分ごとにサーバーを読み直して照合する（別の画面・端末が変えていないか）
+setInterval(() => { if (D && cfg && !syncing && !readOnly && document.visibilityState === 'visible' && !st.get(LS.q, []).length) pull().then(render); }, 60000);
 
 function autoMode() { mode = innerWidth >= 700 ? 'tablet' : 'mobile'; }
 $('#mMode').onclick = () => { mode = mode === 'tablet' ? 'mobile' : 'tablet'; st.set(LS.mode, mode); render(); };
@@ -783,9 +1020,27 @@ function stat() {
   const q = st.get(LS.q, []).length;
   const n = s => D.tasks.filter(t => statusOf(t.video_id) === s).length;
   return '版 ' + APP_VER + '　' + SET() + '　リリース確定 ' + n('confirmed') + '・位置合わせ済み ' + n('located')
-         + '・除外 ' + n('excluded') + ' / ' + D.tasks.length + ' 本　未送信 ' + q + ' 件　表示 ' + mode;
+         + '・除外 ' + n('excluded') + ' / ' + D.tasks.length + ' 本　未送信 ' + q + ' 件（競合 ' + Object.keys(CONFLICT).length
+         + '・不一致 ' + Object.keys(MIS).length + '）　最終サーバー確認 '
+         + (lastVerified ? lastVerified.toTimeString().slice(0, 8) : 'なし') + '　表示 ' + mode;
 }
 $('#menu').onclick = () => { $('#mstat').textContent = stat(); $('#menuDlg').showModal(); };
+$('#mDiff').onclick = () => { $('#menuDlg').close(); openDiff(); };
+$('#diffClose').onclick = () => $('#diffDlg').close();
+$('#lockTake').onclick = () => claim();
+$('#mDump').onclick = () => {   // 端末の保存を全部書き出す（接続設定は含めない）。何も消さない
+  const out = {app: APP_VER, exported_at: new Date().toISOString(), instance: INST, set: D && D.set,
+               conflicts: CONFLICT, mismatches: MIS, storage: {}};
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith('relui.') && k !== LS.cfg) out.storage[k] = localStorage.getItem(k);
+  }
+  const b = new Blob([JSON.stringify(out, null, 1)], {type: 'application/json'});
+  const u = URL.createObjectURL(b), a2 = document.createElement('a');
+  a2.href = u; a2.download = 'relui_device_dump_' + new Date().toISOString().replace(/[:.]/g, '') + '.json';
+  document.body.append(a2); a2.click();
+  setTimeout(() => { URL.revokeObjectURL(u); a2.remove(); }, 1000);
+};
 
 // ---------- 起動 ----------
 async function boot() {
@@ -813,12 +1068,10 @@ async function boot() {
     const o = document.createElement('option'); o.value = code; o.textContent = label + '（' + code + '）';
     sel.append(o);
   }
-  REL = st.get(LS.rel, {}); POS = st.get(LS.pos, {});
-  // 旧版は cap_annotations を丸ごと読み込んでいたので、train/val や test の旧正解が端末に残っている。
-  // 今の set 以外の位置は捨てる。残すと「入力済み」に見えて答えの誘導になる。
-  for (const k of Object.keys(POS)) if (POS[k].set_name !== D.set) delete POS[k];
-  for (const k of Object.keys(REL)) if (REL[k].set_name !== D.set) delete REL[k];
-  st.set(LS.pos, POS); st.set(LS.rel, REL);
+  // 4.6: set ごとの保存を読む。別 set の保存は消さない（旧版は起動時に消していた）
+  REL = st.get(LS.rel(D.set), {}); POS = st.get(LS.pos(D.set), {});
+  migrateLegacy();
+  st.set(LS.pos(D.set), POS); st.set(LS.rel(D.set), REL);
   mode = st.get(LS.mode, null) || (innerWidth >= 700 ? 'tablet' : 'mobile');
   cfg = st.get(LS.cfg, null);
   const c = window.RELUI_CONFIG || {};
@@ -841,6 +1094,7 @@ async function boot() {
   start();
 }
 async function start() {
+  lockCheck();
   await pull();
   const k = D.tasks.findIndex(t => {
     const v = t.video_id, s = statusOf(v);

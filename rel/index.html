@@ -104,6 +104,14 @@
    font-size:11px;padding:0 5px;border-radius:3px}
  .thumb.done{border-color:var(--ok)}.thumb.draft{border-color:var(--draft)}
  .thumb.cur{box-shadow:0 0 0 2px var(--hint) inset}
+ /* 4.6: 送信待ち・食い違いの印、別画面の保存不可 */
+ [hidden]{display:none!important}
+ .fr.pend{box-shadow:inset 0 -3px 0 var(--hint)}.thumb.pend{box-shadow:inset 0 -4px 0 var(--hint)}
+ .fr.mis{outline:2px solid var(--bad);outline-offset:1px}.thumb.mis{border-color:var(--bad)}
+ #lock{position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.88);display:flex;align-items:center;justify-content:center;padding:20px}
+ #lock>div{background:var(--panel);border:1px solid var(--bad);border-radius:10px;padding:18px;max-width:520px}
+ #lock button{padding:12px 18px;font-size:16px;background:var(--ok);color:#05210d;border:none;border-radius:8px;font-weight:700}
+ #unconf{flex:1.2}
 </style>
 
 <div id="top">
@@ -139,6 +147,7 @@
  <div class="row" id="actrow">
   <button id="prev">← 前</button>
   <button id="undo">取消</button>
+  <button id="unconf" disabled>未確認に戻す</button>
   <button id="skip">見送り</button>
   <button id="go" disabled>確定して次へ</button>
  </div>
@@ -203,12 +212,30 @@
  <button id="exCancel">やめる</button>
 </dialog>
 
+<dialog id="diffDlg">
+ <h3>サーバーとの差分</h3>
+ <p>競合＝送ろうとしたら、別の画面か端末がサーバーの行を先に変えていた。不一致＝端末とサーバーが違い、送る予定にも入っていない。どちらを残すか選んでください（選ばなかった方は端末に控えとして残ります）。</p>
+ <div id="diffList"></div>
+ <button id="diffClose">閉じる</button>
+</dialog>
+
+<div id="lock" hidden>
+ <div>
+  <h3>この画面では保存できません</h3>
+  <p>同じ入力画面が、別のタブかウィンドウでも開かれています。古い画面から保存すると、新しい入力を上書きしてしまうためです。</p>
+  <p>ほかの画面を閉じてから、下のボタンを押してください。</p>
+  <button id="lockTake">この画面で続ける</button>
+ </div>
+</div>
+
 <dialog id="menuDlg">
  <h3>メニュー</h3>
  <p id="mstat"></p>
  <button id="mMode">スマホ / タブレット 切替</button>
  <button id="mBig">スマホ: 一覧 / 1コマ拡大 切替</button>
  <button id="mSync">いま同期する</button>
+ <button id="mDiff">サーバーとの差分</button>
+ <button id="mDump">端末のデータを全部書き出す</button>
  <button id="mJson">JSONで書き出す</button>
  <button id="mRedo">この投球をやり直す</button>
  <button id="mReset">接続設定をやり直す</button>
@@ -216,6 +243,6 @@
  <button id="mClose">閉じる</button>
 </dialog>
 
-<script src="config.js?v=4.5"></script>
-<script src="app.js?v=4.5"></script>
+<script src="config.js?v=4.6"></script>
+<script src="app.js?v=4.6"></script>
 </html>
